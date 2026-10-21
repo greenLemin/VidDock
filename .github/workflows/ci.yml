@@ -46,11 +46,11 @@ jobs:
       - name: TypeScript typecheck
         run: npm run typecheck
 
-      - name: Unit & Integration tests
-        run: npm test
-
       - name: Build extension & host
         run: npm run build
+
+      - name: Unit & Integration tests
+        run: npm test
 
       - name: E2E test suite
         run: npm run test:e2e

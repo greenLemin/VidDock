@@ -20,6 +20,7 @@
     "host:install": "bash scripts/install-macos.sh",
     "host:uninstall": "bash scripts/uninstall-macos.sh",
     "icons": "node scripts/generate-icons.mjs",
+    "pretest": "npm run build",
     "test": "vitest run --project unit --project integration",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
