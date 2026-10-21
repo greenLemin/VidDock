@@ -13,6 +13,7 @@ export const HOST_VERSION = '1.0.0';
 export class HostServer {
   readonly manager: TaskManager;
   private readonly workRoot: string;
+  private inFlight = new Set<Promise<void>>();
   private closed = false;
 
   constructor(
@@ -33,18 +34,30 @@ export class HostServer {
   start(): Promise<void> {
     return new Promise((resolve) => {
       const decoder = new MessageDecoder(
-        (msg) => void this.handle(msg),
+        (msg) => {
+          const p: Promise<void> = Promise.resolve(this.handle(msg))
+            .catch((err) => this.log(`handler error: ${(err as Error).message}`))
+            .finally(() => this.inFlight.delete(p));
+          this.inFlight.add(p);
+        },
         (err) => this.log(`protocol error: ${err.message}`),
       );
       this.input.on('data', (chunk: Buffer | string) =>
         decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
       );
-      const end = () => {
-        void this.close().then(resolve);
+      let ended = false;
+      const end = async () => {
+        if (ended) return;
+        ended = true;
+        while (this.inFlight.size > 0) {
+          await Promise.allSettled(Array.from(this.inFlight));
+        }
+        await this.close();
+        resolve();
       };
-      this.input.on('end', end);
-      this.input.on('close', end);
-      this.input.on('error', end);
+      this.input.on('end', () => void end());
+      this.input.on('close', () => void end());
+      this.input.on('error', () => void end());
     });
   }
 

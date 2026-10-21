@@ -84,6 +84,17 @@ for dir in "${CANDIDATE_DIRS[@]}"; do
   fi
 done
 
+# Remove persistent host binary directory
+HOST_INSTALL_DIR="$HOME/Library/Application Support/VidDock/host"
+if [ -d "$HOST_INSTALL_DIR" ]; then
+  if [ "$DRY_RUN" = true ]; then
+    echo "  [DRY-RUN] Would remove: $HOST_INSTALL_DIR"
+  else
+    rm -rf "$HOST_INSTALL_DIR"
+    echo "  [✓] Removed: $HOST_INSTALL_DIR"
+  fi
+fi
+
 # Check for running host processes
 RUNNING_PIDS=$(pgrep -f "viddock-host" 2>/dev/null || true)
 if [ -n "$RUNNING_PIDS" ]; then

@@ -128,6 +128,21 @@ fi
 echo "[1/4] Native Host Launcher located:"
 echo "      $LAUNCHER_PATH"
 
+# Copy host files to persistent Application Support directory to avoid macOS TCC and quarantine issues
+INSTALL_HOST_DIR="$HOME/Library/Application Support/VidDock/host"
+if [ "$DRY_RUN" = false ]; then
+  mkdir -p "$INSTALL_HOST_DIR"
+  cp -f "$HOST_DIR/viddock-host-launcher.sh" "$INSTALL_HOST_DIR/"
+  cp -f "$HOST_DIR/viddock-host.mjs" "$INSTALL_HOST_DIR/"
+  if [ -f "$HOST_DIR/package.json" ]; then
+    cp -f "$HOST_DIR/package.json" "$INSTALL_HOST_DIR/"
+  fi
+  chmod +x "$INSTALL_HOST_DIR/viddock-host-launcher.sh" "$INSTALL_HOST_DIR/viddock-host.mjs"
+  xattr -c "$INSTALL_HOST_DIR"/* 2>/dev/null || true
+  LAUNCHER_PATH="$INSTALL_HOST_DIR/viddock-host-launcher.sh"
+  HOST_DIR="$INSTALL_HOST_DIR"
+fi
+
 # 2. Resolve Extension ID
 FALLBACK_ID="pknljchblnkgfmfcfdfkddedjofmjbkj"
 DETECTED_ID=""
