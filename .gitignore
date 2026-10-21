@@ -1,0 +1,21 @@
+node_modules/
+dist/
+release/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.crx
+.tmp/
+test-results/
+playwright-report/
+# Downloaded media must never be committed
+*.mp4
+*.mkv
+*.webm
+*.m4s
+*.ts.part
+!tests/fixtures/**/*.keep
