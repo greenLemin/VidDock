@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>VidDock</title>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div id="popup-root" class="popup-container">
+      <!-- Header -->
+      <header class="popup-header">
+        <div class="brand">
+          <svg class="brand-logo" width="22" height="22" viewBox="0 0 32 32" fill="none">
+            <rect width="32" height="32" rx="8" fill="url(#logo-grad)" />
+            <path d="M11 10L23 16L11 22V10Z" fill="white" />
+            <path d="M9 25H23V27H9V25Z" fill="white" opacity="0.8" />
+            <defs>
+              <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#0071e3" />
+                <stop offset="1" stop-color="#5856d6" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <span class="brand-title">VidDock</span>
+        </div>
+
+        <div class="header-actions">
+          <button id="host-status-pill" class="status-pill status-connecting" title="Checking companion status...">
+            <span class="status-dot"></span>
+            <span id="host-status-text" class="status-label">Host...</span>
+          </button>
+          <button
+            id="btn-open-dashboard"
+            class="icon-button"
+            title="Open Download Manager"
+            aria-label="Open Download Manager"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <path d="M9 3V21M3 9H21" />
+            </svg>
+          </button>
+          <button id="btn-open-settings" class="icon-button" title="Settings" aria-label="Settings">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main class="popup-main">
+        <div class="section-header">
+          <h2 class="section-title">Detected on this page <span id="media-count" class="badge-count">0</span></h2>
+          <button id="btn-refresh-media" class="btn-text-action" title="Rescan page">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <path d="M23 4v6h-6M1 20v-6h6" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+            </svg>
+            Rescan
+          </button>
+        </div>
+
+        <!-- Media Cards List -->
+        <div id="media-list" class="media-list"></div>
+
+        <!-- Empty State -->
+        <div id="empty-state" class="empty-state hidden">
+          <div class="empty-state-icon">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2" y="4" width="20" height="16" rx="4" />
+              <polygon points="10 9 16 12 10 15 10 9" fill="currentColor" fill-opacity="0.2" />
+            </svg>
+          </div>
+          <h3 class="empty-state-title">No Media Detected</h3>
+          <p class="empty-state-desc">
+            Play video on this tab or navigate to a stream. VidDock detects HLS, DASH, direct MP4, and Mediasite streams
+            automatically.
+          </p>
+          <button id="btn-empty-rescan" class="btn-secondary btn-sm">Rescan Current Page</button>
+        </div>
+      </main>
+
+      <!-- Running Tasks Dock -->
+      <footer id="tasks-summary-dock" class="tasks-summary-dock hidden">
+        <div class="dock-header">
+          <div class="dock-title">
+            <span class="pulse-indicator"></span>
+            <span id="dock-task-count">1 Active Download</span>
+            <span id="dock-task-speed" class="dock-speed">0 B/s</span>
+          </div>
+          <button id="dock-view-all" class="dock-link">Dashboard →</button>
+        </div>
+        <div class="progress-track" style="height: 4px">
+          <div id="dock-progress-fill" class="progress-fill" style="width: 0%"></div>
+        </div>
+      </footer>
+    </div>
+
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

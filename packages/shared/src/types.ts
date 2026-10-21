@@ -37,6 +37,58 @@ export interface SubtitleTrack {
   format: 'vtt' | 'srt' | 'ttml' | 'unknown';
 }
 
+/** Layout strategies for multi-feed / dual-stream video presentations (e.g. Mediasite camera + slides). */
+export type DualStreamLayout = 'separate' | 'side-by-side' | 'pip' | 'multi-track';
+
+/** Metadata for an individual slide within a presentation. */
+export interface MediasiteSlide {
+  /** 0-based sequential slide index in presentation order. */
+  index: number;
+  /** Slide title or name (if available). */
+  title?: string;
+  /** Presentation timestamp in milliseconds. */
+  timeMs: number;
+  /** Presentation timestamp in seconds (timeMs / 1000). */
+  timeSec: number;
+  /** Absolute or resolved URL to the slide thumbnail image (if available). */
+  thumbnailUrl?: string;
+}
+
+export interface MediasiteMediaUrl {
+  url: string;
+  mimeType: string;
+  kind: MediaKind | 'smooth';
+  /** Derived (unverified) alternative URL, e.g. HLS for a Smooth Streaming manifest. */
+  derivedHls?: string;
+}
+
+export interface MediasiteStream {
+  index: number;
+  streamType?: number;
+  label: string;
+  urls: MediasiteMediaUrl[];
+  /** True when the stream is only slide images (no downloadable video). */
+  slidesOnly: boolean;
+  slides?: MediasiteSlide[];
+}
+
+export interface MediasiteCaption {
+  url: string;
+  language?: string;
+  label: string;
+}
+
+export interface MediasitePresentation {
+  title: string;
+  durationSec?: number;
+  presenters: string[];
+  streams: MediasiteStream[];
+  slides: MediasiteSlide[];
+  captions: MediasiteCaption[];
+  presentationId?: string;
+  layout?: DualStreamLayout;
+}
+
 export type MediaSource = 'network' | 'dom' | 'mediasite';
 
 export interface MediaItem {
@@ -64,18 +116,12 @@ export interface MediaItem {
   /** Set when VidDock cannot download this stream (DRM, live, ...). */
   unsupportedReason?: string;
   detectedAt: number;
+  /** Suggested or active dual-stream layout for multi-track presentations. */
+  layout?: DualStreamLayout;
 }
 
 export type TaskState =
-  | 'queued'
-  | 'preparing'
-  | 'downloading'
-  | 'processing'
-  | 'verifying'
-  | 'completed'
-  | 'paused'
-  | 'failed'
-  | 'cancelled';
+  'queued' | 'preparing' | 'downloading' | 'processing' | 'verifying' | 'completed' | 'paused' | 'failed' | 'cancelled';
 
 export interface TaskProgress {
   bytesDownloaded: number;
@@ -171,6 +217,8 @@ export interface NativeDownloadRequest {
   headers: RequestHeaders;
   options: DownloadOptions;
   expectedDurationSec?: number;
+  /** Dual-stream layout for multi-track presentations (default: multi-track). */
+  layout?: DualStreamLayout;
 }
 
 export interface Settings {

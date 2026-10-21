@@ -7,40 +7,25 @@
  * Smooth-Streaming locations (`.ism/manifest`) cannot be downloaded directly; we derive an HLS URL
  * (`(format=m3u8-aapl)`) which the extension verifies by fetching before offering it.
  */
-import type { MediaKind } from './types.ts';
+import type {
+  DualStreamLayout,
+  MediaKind,
+  MediasiteCaption,
+  MediasiteMediaUrl,
+  MediasitePresentation,
+  MediasiteSlide,
+  MediasiteStream,
+} from './types.ts';
 import { parseUrl } from './url.ts';
 
-export interface MediasiteMediaUrl {
-  url: string;
-  mimeType: string;
-  kind: MediaKind | 'smooth';
-  /** Derived (unverified) alternative URL, e.g. HLS for a Smooth Streaming manifest. */
-  derivedHls?: string;
-}
-
-export interface MediasiteStream {
-  index: number;
-  streamType?: number;
-  label: string;
-  urls: MediasiteMediaUrl[];
-  /** True when the stream is only slide images (no downloadable video). */
-  slidesOnly: boolean;
-}
-
-export interface MediasiteCaption {
-  url: string;
-  language?: string;
-  label: string;
-}
-
-export interface MediasitePresentation {
-  title: string;
-  durationSec?: number;
-  presenters: string[];
-  streams: MediasiteStream[];
-  captions: MediasiteCaption[];
-  presentationId?: string;
-}
+export type {
+  DualStreamLayout,
+  MediasiteCaption,
+  MediasiteMediaUrl,
+  MediasitePresentation,
+  MediasiteSlide,
+  MediasiteStream,
+};
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export function isMediasiteUrl(url: string): boolean {
@@ -76,13 +61,60 @@ function streamLabel(index: number, total: number, streamType: number | undefine
   return `Secondary video (stream ${index + 1}${streamType !== undefined ? `, type ${streamType}` : ''})`;
 }
 
-export function parsePlayerOptions(json: unknown, _pageUrl = ''): MediasitePresentation | undefined {
+function parseSlide(raw: any, defaultIndex: number, pageUrl: string): MediasiteSlide | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+
+  const rawTitle = raw.Title ?? raw.SlideTitle ?? raw.Name ?? raw.Description ?? raw.Text;
+  const title = typeof rawTitle === 'string' && rawTitle.trim() ? rawTitle.trim() : undefined;
+
+  const rawTime = raw.Time ?? raw.Timestamp ?? raw.TimeMs ?? raw.PresentationTime ?? raw.StartTime ?? raw.Offset ?? 0;
+  const numTime = Number(rawTime);
+  const timeMs = Number.isFinite(numTime) && numTime >= 0 ? Math.round(numTime) : 0;
+  const timeSec = Number((timeMs / 1000).toFixed(3));
+
+  const rawThumb =
+    raw.ThumbnailUrl ??
+    raw.Thumbnail ??
+    raw.ThumbnailLocation ??
+    raw.Url ??
+    raw.ImageUrl ??
+    raw.Location ??
+    raw.ContentUrl ??
+    raw.Image;
+
+  let thumbnailUrl: string | undefined;
+  if (typeof rawThumb === 'string' && rawThumb.trim()) {
+    const trimmed = rawThumb.trim();
+    if (parseUrl(trimmed)) {
+      thumbnailUrl = trimmed;
+    } else if (pageUrl) {
+      const resolved = parseUrl(trimmed, pageUrl);
+      thumbnailUrl = resolved ? resolved.toString() : trimmed;
+    } else {
+      thumbnailUrl = trimmed;
+    }
+  }
+
+  const rawIndex = raw.Index ?? raw.SlideIndex ?? raw.SlideNumber;
+  const numIndex = Number(rawIndex);
+  const index = Number.isInteger(numIndex) && numIndex >= 0 ? numIndex : defaultIndex;
+
+  return { index, title, timeMs, timeSec, thumbnailUrl };
+}
+
+export function parsePlayerOptions(json: unknown, pageUrl = ''): MediasitePresentation | undefined {
   const root: any = (json as any)?.d ?? json;
   const pres: any = root?.Presentation;
   if (!pres || typeof pres !== 'object') return undefined;
 
   const rawStreams: any[] = Array.isArray(pres.Streams) ? pres.Streams : [];
   const streams: MediasiteStream[] = [];
+  const rawSlideSets: any[][] = [];
+
+  if (Array.isArray(pres.Slides)) {
+    rawSlideSets.push(pres.Slides);
+  }
+
   rawStreams.forEach((s, i) => {
     const urls: MediasiteMediaUrl[] = [];
     for (const v of Array.isArray(s?.VideoUrls) ? s.VideoUrls : []) {
@@ -98,22 +130,58 @@ export function parsePlayerOptions(json: unknown, _pageUrl = ''): MediasitePrese
         derivedHls: kind === 'smooth' ? deriveHlsFromSmooth(loc) : undefined,
       });
     }
-    const hasSlides = Array.isArray(s?.Slides) && s.Slides.length > 0;
+
+    let streamSlides: MediasiteSlide[] | undefined;
+    if (Array.isArray(s?.Slides)) {
+      rawSlideSets.push(s.Slides);
+      streamSlides = s.Slides.map((slideRaw: any, idx: number) => parseSlide(slideRaw, idx, pageUrl)).filter(
+        (sl: MediasiteSlide | undefined): sl is MediasiteSlide => !!sl,
+      );
+    }
+
+    const hasSlides = !!(streamSlides && streamSlides.length > 0);
     const slidesOnly = urls.length === 0 && hasSlides;
     if (urls.length === 0 && !slidesOnly) return;
+
     streams.push({
       index: i,
       streamType: typeof s?.StreamType === 'number' ? s.StreamType : undefined,
       label: '',
       urls,
       slidesOnly,
+      slides: streamSlides,
     });
   });
+
   const videoStreams = streams.filter((s) => !s.slidesOnly);
   videoStreams.forEach((s, i) => {
     s.label = streamLabel(i, videoStreams.length, s.streamType, false);
   });
   streams.filter((s) => s.slidesOnly).forEach((s) => (s.label = 'Slides'));
+
+  // Collect, deduplicate, and sort all presentation slides
+  const collectedSlides: MediasiteSlide[] = [];
+  for (const set of rawSlideSets) {
+    for (const item of set) {
+      const parsed = parseSlide(item, collectedSlides.length, pageUrl);
+      if (parsed) collectedSlides.push(parsed);
+    }
+  }
+
+  const uniqueSlides: MediasiteSlide[] = [];
+  const seen = new Set<string>();
+  for (const sl of collectedSlides) {
+    const key = `${sl.timeMs}|${sl.thumbnailUrl ?? ''}|${sl.title ?? ''}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      uniqueSlides.push(sl);
+    }
+  }
+
+  uniqueSlides.sort((a, b) => a.timeMs - b.timeMs);
+  uniqueSlides.forEach((sl, i) => {
+    sl.index = i;
+  });
 
   const captions: MediasiteCaption[] = [];
   for (const t of Array.isArray(pres.Transcripts) ? pres.Transcripts : []) {
@@ -136,6 +204,7 @@ export function parsePlayerOptions(json: unknown, _pageUrl = ''): MediasitePrese
     durationSec: Number.isFinite(dur) && dur > 0 ? dur / 1000 : undefined,
     presenters,
     streams,
+    slides: uniqueSlides,
     captions,
     presentationId: typeof pres.Id === 'string' ? pres.Id : undefined,
   };

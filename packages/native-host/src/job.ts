@@ -46,7 +46,8 @@ export class ProgressTracker {
   snapshot(downloadDone: boolean, now = Date.now()): TaskProgress {
     const rate = this.rate(now);
     let total = this.totalBytes;
-    if (this.segTotal > 1 && this.segDone > 0) total = Math.max(this.bytes, (this.bytes / this.segDone) * this.segTotal);
+    if (this.segTotal > 1 && this.segDone > 0)
+      total = Math.max(this.bytes, (this.bytes / this.segDone) * this.segTotal);
     let percent: number;
     if (downloadDone) percent = 100;
     else if (this.segTotal > 1) percent = (this.segDone / this.segTotal) * 100;
@@ -243,7 +244,12 @@ export class DownloadJob {
     let warnings: string[] = [];
     const single = plans.length === 1 ? plans[0] : undefined;
     const singleStream = single?.streams.length === 1 ? single.streams[0] : undefined;
-    const keepOriginal = !!(single?.originalExt && singleStream && req.container === 'auto' && req.subtitleMode !== 'embed');
+    const keepOriginal = !!(
+      single?.originalExt &&
+      singleStream &&
+      req.container === 'auto' &&
+      req.subtitleMode !== 'embed'
+    );
     let inputs: MuxInput[] = [];
     if (keepOriginal && single && singleStream) {
       finalTmp = singleStream.file;
@@ -251,11 +257,18 @@ export class DownloadJob {
     } else {
       inputs = await this.probeInputs(streams, ffprobe as string, signal);
       const embed = req.subtitleMode === 'embed' ? subs : [];
-      const choice = chooseContainer(req.container, inputs);
+      const choice = chooseContainer(req.container, inputs, req.layout);
       if (choice.note) warnings.push(choice.note);
       ext = choice.ext;
       finalTmp = path.join(this.workDir, `output.${ext}`);
-      const args = buildMuxArgs({ inputs, subtitles: embed, choice, output: finalTmp, title: req.title });
+      const args = buildMuxArgs({
+        inputs,
+        subtitles: embed,
+        choice,
+        output: finalTmp,
+        title: req.title,
+        layout: req.layout,
+      });
       const r = await runFfmpeg(ffmpeg as string, args, signal);
       if (r.code !== 0) {
         throw new UserFacingError(`FFmpeg failed (exit ${r.code}): ${lastLine(r.stderr)}`, 'FFMPEG_FAILED');
@@ -319,13 +332,18 @@ export class DownloadJob {
       const file = path.join(dir, `${idx++}.vtt`);
       try {
         const { text } = await client.getText(sub.url, signal);
-        const vtt = /^\s*#EXTM3U/.test(text) ? await this.mergeVttPlaylist(text, sub.url, client, signal) : normalizeVtt(text);
+        const vtt = /^\s*#EXTM3U/.test(text)
+          ? await this.mergeVttPlaylist(text, sub.url, client, signal)
+          : normalizeVtt(text);
         fs.writeFileSync(file, vtt);
         out.push({ file, language: sub.language, label: sub.label });
       } catch (e) {
         if (e instanceof AbortedError) throw e;
         const w = this.info.warnings ?? [];
-        this.info = { ...this.info, warnings: [...w, `Subtitle "${sub.label ?? sub.language ?? idx}" could not be downloaded`] };
+        this.info = {
+          ...this.info,
+          warnings: [...w, `Subtitle "${sub.label ?? sub.language ?? idx}" could not be downloaded`],
+        };
       }
     }
     return out;
@@ -346,7 +364,8 @@ export class DownloadJob {
     let p = this.keyCache.get(url);
     if (!p) {
       p = client.getBuffer({ url }, signal).then((b) => {
-        if (b.length !== 16) throw new UserFacingError('HLS encryption key is not 16 bytes (unsupported key delivery)', 'DRM');
+        if (b.length !== 16)
+          throw new UserFacingError('HLS encryption key is not 16 bytes (unsupported key delivery)', 'DRM');
         return b;
       });
       this.keyCache.set(url, p);
@@ -392,7 +411,10 @@ export class DownloadJob {
           this.emit();
         } catch (e) {
           if (!(e instanceof AbortedError) && failure === undefined) {
-            failure = e instanceof HttpError && e.status === 404 ? new UserFacingError(`Segment ${i + 1} of ${total} is missing (HTTP 404)`, 'SEGMENT_MISSING') : e;
+            failure =
+              e instanceof HttpError && e.status === 404
+                ? new UserFacingError(`Segment ${i + 1} of ${total} is missing (HTTP 404)`, 'SEGMENT_MISSING')
+                : e;
             inner.abort('failure');
           }
           return;
@@ -431,11 +453,15 @@ export function describeError(e: unknown): { message: string; code: string } {
   if (e instanceof UserFacingError) return { message: e.message, code: e.code };
   if (e instanceof PathError) return { message: e.message, code: e.code };
   if (e instanceof HttpError) {
-    const hint = e.status === 401 || e.status === 403 ? ' Your session may have expired: reopen the video page and try again.' : '';
+    const hint =
+      e.status === 401 || e.status === 403
+        ? ' Your session may have expired: reopen the video page and try again.'
+        : '';
     return { message: `${e.message}.${hint}`.replace(/\.\./g, '.'), code: e.code };
   }
   const code = (e as { code?: string }).code;
   if (code === 'ENOSPC') return { message: 'The disk is full.', code: 'DISK_FULL' };
-  if (code === 'EACCES' || code === 'EPERM') return { message: 'Permission denied writing to the output folder.', code: 'PATH_ERROR' };
+  if (code === 'EACCES' || code === 'EPERM')
+    return { message: 'Permission denied writing to the output folder.', code: 'PATH_ERROR' };
   return { message: (e as Error)?.message ?? String(e), code: 'ERROR' };
 }

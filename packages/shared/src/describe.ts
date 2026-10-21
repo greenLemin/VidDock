@@ -47,7 +47,8 @@ export function describeHls(text: string, url: string): DescribedMedia {
       unsupportedReason,
     };
   }
-  const audioOnlyVariants = pl.variants.length > 0 && pl.variants.every((v) => !v.height && isAudioOnlyCodecs(v.codecs));
+  const audioOnlyVariants =
+    pl.variants.length > 0 && pl.variants.every((v) => !v.height && isAudioOnlyCodecs(v.codecs));
   const qualities: Quality[] = dedupeQualities(
     sortQualities(
       pl.variants.map((v, i) => ({
@@ -132,7 +133,10 @@ export function describeDash(text: string, url: string): DescribedMedia {
     unsupportedReason = 'Manifest has no downloadable representations';
   }
   return {
-    qualities: qualities.length > 0 ? qualities : audioTracks.map((a) => ({ id: a.id, label: a.label, ref: a.ref, bandwidth: a.bandwidth })),
+    qualities:
+      qualities.length > 0
+        ? qualities
+        : audioTracks.map((a) => ({ id: a.id, label: a.label, ref: a.ref, bandwidth: a.bandwidth })),
     audioTracks: qualities.length > 0 ? audioTracks : [],
     subtitles: [],
     durationSec: mpd.durationSec || undefined,

@@ -1,0 +1,97 @@
+/* VidDock Design Tokens - Apple Human Interface Guidelines */
+
+:root {
+  color-scheme: light dark;
+
+  /* Typography */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', Monaco, Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 22px;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-tight: -0.015em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.03em;
+  --tracking-caps: 0.06em;
+
+  /* Surfaces & Canvas */
+  --bg-canvas: light-dark(#f5f5f7, #000000);
+  --bg-surface: light-dark(rgba(255, 255, 255, 0.85), rgba(28, 28, 30, 0.85));
+  --bg-surface-elevated: light-dark(#ffffff, #2c2c2e);
+  --bg-surface-secondary: light-dark(#f2f2f7, #1c1c1e);
+  --bg-card: light-dark(rgba(255, 255, 255, 0.9), rgba(44, 44, 46, 0.8));
+  --bg-card-hover: light-dark(rgba(255, 255, 255, 1), rgba(58, 58, 60, 0.9));
+  --bg-card-active: light-dark(#ebebed, #3a3a3c);
+  --bg-glass-card: light-dark(rgba(255, 255, 255, 0.65), rgba(36, 36, 38, 0.65));
+
+  /* Hairline Borders */
+  --border-subtle: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.12));
+  --border-medium: light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.22));
+  --border-focus: light-dark(#0071e3, #0a84ff);
+
+  /* Typography Colors */
+  --text-primary: light-dark(#1d1d1f, #f5f5f7);
+  --text-secondary: light-dark(#6e6e73, #a1a1a6);
+  --text-tertiary: light-dark(#86868b, #636366);
+  --text-on-accent: #ffffff;
+
+  /* Apple System Blue Accent */
+  --accent: light-dark(#0071e3, #0a84ff);
+  --accent-hover: light-dark(#0077ed, #409cff);
+  --accent-subtle: light-dark(rgba(0, 113, 227, 0.12), rgba(10, 132, 255, 0.2));
+  --accent-ring: light-dark(rgba(0, 113, 227, 0.35), rgba(10, 132, 255, 0.45));
+
+  /* Status Colors */
+  --status-green: light-dark(#34c759, #30d158);
+  --status-green-bg: light-dark(rgba(52, 199, 89, 0.14), rgba(48, 209, 88, 0.22));
+  --status-orange: light-dark(#ff9500, #ff9f0a);
+  --status-orange-bg: light-dark(rgba(255, 149, 0, 0.14), rgba(255, 159, 10, 0.22));
+  --status-red: light-dark(#ff3b30, #ff453a);
+  --status-red-bg: light-dark(rgba(255, 59, 48, 0.14), rgba(255, 69, 58, 0.22));
+  --status-indigo: light-dark(#5856d6, #5e5ce6);
+  --status-indigo-bg: light-dark(rgba(88, 86, 214, 0.14), rgba(94, 92, 230, 0.22));
+
+  /* Stream Badges */
+  --badge-hls: linear-gradient(135deg, #7928ca 0%, #ff0080 100%);
+  --badge-dash: linear-gradient(135deg, #0070f3 0%, #00dfd8 100%);
+  --badge-direct: linear-gradient(135deg, #00b4db 0%, #0083b0 100%);
+  --badge-mediasite: linear-gradient(135deg, #ff8008 0%, #ffc837 100%);
+
+  /* Shadows */
+  --shadow-sm: light-dark(0 1px 2px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.35));
+  --shadow-md: light-dark(0 4px 12px rgba(0, 0, 0, 0.08), 0 4px 16px rgba(0, 0, 0, 0.45));
+  --shadow-lg: light-dark(0 8px 24px rgba(0, 0, 0, 0.12), 0 8px 32px rgba(0, 0, 0, 0.6));
+
+  /* Radii */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 9999px;
+
+  /* Glassmorphism */
+  --backdrop-blur: blur(20px) saturate(180%);
+}
+
+/* Zero-FOUC Theme Override Reflection */
+:root:has(> head > meta[name='color-scheme'][content='dark']) {
+  color-scheme: dark;
+}
+
+:root:has(> head > meta[name='color-scheme'][content='light']) {
+  color-scheme: light;
+}

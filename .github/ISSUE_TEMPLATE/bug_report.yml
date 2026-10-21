@@ -1,0 +1,66 @@
+name: Bug Report
+description: File a bug report to help improve VidDock
+title: '[BUG]: '
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue! VidDock is 100% free and open-source.
+  - type: input
+    id: version
+    attributes:
+      label: VidDock Version
+      description: What version of VidDock are you using? (Check Settings page)
+      placeholder: e.g. 1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser & Version
+      placeholder: e.g. Google Chrome 131.0.6778.86
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what bug occurred.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps to reproduce this behavior.
+      placeholder: |
+        1. Navigate to '...'
+        2. Click VidDock icon
+        3. Click 'Download'
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console / Host Diagnostics
+      description: Paste any error messages from the Settings > Diagnostics tab or host verification script.

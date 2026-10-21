@@ -2,6 +2,7 @@
 import type {
   Container,
   DownloadOptions,
+  DualStreamLayout,
   NativeDownloadRequest,
   NativeSubtitle,
   NativeTrack,
@@ -56,7 +57,8 @@ function url(v: unknown, name: string): string {
 }
 
 function int(v: unknown, name: string, min: number, max: number): number {
-  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) fail(`${name} must be an integer ${min}..${max}`);
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max)
+    fail(`${name} must be an integer ${min}..${max}`);
   return v;
 }
 
@@ -136,6 +138,14 @@ export function validateDownloadRequest(input: unknown): NativeDownloadRequest {
       fail('expectedDurationSec invalid');
     expectedDurationSec = r.expectedDurationSec;
   }
+  const VALID_LAYOUTS = new Set(['separate', 'side-by-side', 'pip', 'multi-track']);
+  let layout: DualStreamLayout | undefined;
+  if (r.layout !== undefined && r.layout !== null) {
+    if (typeof r.layout !== 'string' || !VALID_LAYOUTS.has(r.layout)) {
+      fail('layout unsupported');
+    }
+    layout = r.layout as DualStreamLayout;
+  }
   return {
     taskId,
     title: str(r.title ?? '', 'title', 500),
@@ -148,9 +158,15 @@ export function validateDownloadRequest(input: unknown): NativeDownloadRequest {
     headers: validateHeaders(r.headers),
     options,
     expectedDurationSec,
+    layout,
   };
 }
 
 export function isHostRequest(m: unknown): m is HostRequest {
-  return !!m && typeof m === 'object' && typeof (m as { type?: unknown }).type === 'string' && typeof (m as { id?: unknown }).id === 'string';
+  return (
+    !!m &&
+    typeof m === 'object' &&
+    typeof (m as { type?: unknown }).type === 'string' &&
+    typeof (m as { id?: unknown }).id === 'string'
+  );
 }

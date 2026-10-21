@@ -54,7 +54,10 @@ export function applyFilenameTemplate(template: string, vars: TemplateVars): str
     time: `${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}`,
   };
   const out = (template || '{title}').replace(/\{(\w+)\}/g, (_m, key: string) => map[key] ?? '');
-  const cleaned = out.replace(/\s*[-_]\s*[-_]\s*/g, ' - ').replace(/[\s_-]+$/, '').trim();
+  const cleaned = out
+    .replace(/\s*[-_]\s*[-_]\s*/g, ' - ')
+    .replace(/[\s_-]+$/, '')
+    .trim();
   return sanitizeFilename(cleaned || vars.title);
 }
 

@@ -16,7 +16,11 @@ export function backoffDelay(
 }
 
 /** Parse Retry-After (seconds or HTTP date) to milliseconds; capped. */
-export function parseRetryAfter(value: string | null | undefined, now = Date.now(), maxMs = 60_000): number | undefined {
+export function parseRetryAfter(
+  value: string | null | undefined,
+  now = Date.now(),
+  maxMs = 60_000,
+): number | undefined {
   if (!value) return undefined;
   const secs = Number(value);
   if (Number.isFinite(secs)) return Math.min(maxMs, Math.max(0, secs * 1000));

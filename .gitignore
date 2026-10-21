@@ -19,3 +19,4 @@ playwright-report/
 *.m4s
 *.ts.part
 !tests/fixtures/**/*.keep
+.agents/

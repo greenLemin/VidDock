@@ -75,7 +75,8 @@ function mediaTypeExt(url: string, fallback: string): string {
 async function planHlsMedia(url: string, kind: StreamPlan['kind'], id: string, ctx: PlanContext): Promise<StreamPlan> {
   const { text, finalUrl } = await ctx.client.getText(url, ctx.signal);
   const pl = parseHls(text, finalUrl);
-  if (pl.type !== 'media') throw new UserFacingError('Expected a media playlist but found a master playlist', 'BAD_PLAYLIST');
+  if (pl.type !== 'media')
+    throw new UserFacingError('Expected a media playlist but found a master playlist', 'BAD_PLAYLIST');
   assertDownloadableHls(pl);
   const dir = path.join(ctx.workDir, `t${ctx.trackIndex}`, id);
   fs.mkdirSync(dir, { recursive: true });
@@ -163,7 +164,8 @@ function dashStream(rep: DashRepresentation, kind: 'video' | 'audio', id: string
   }
   const parts: Part[] = [];
   let idx = 0;
-  if (rep.init) parts.push({ url: rep.init, range: parseRange(rep.initRange), dest: path.join(dir, `${pad(idx++)}.seg`) });
+  if (rep.init)
+    parts.push({ url: rep.init, range: parseRange(rep.initRange), dest: path.join(dir, `${pad(idx++)}.seg`) });
   for (const s of rep.segments) {
     parts.push({ url: s.url, range: parseRange(s.range), dest: path.join(dir, `${pad(idx++)}.seg`) });
   }
@@ -181,7 +183,8 @@ async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: Plan
   }
   if (mpd.drm) throw new UserFacingError(`${mpd.drm}. VidDock does not bypass DRM.`, 'DRM');
   if (mpd.isLive) throw new UserFacingError('Live streams are not supported', 'LIVE');
-  if (mpd.periods.length !== 1) throw new UserFacingError('Multi-period manifests are not supported yet', 'UNSUPPORTED');
+  if (mpd.periods.length !== 1)
+    throw new UserFacingError('Multi-period manifests are not supported yet', 'UNSUPPORTED');
   const adaptations = mpd.periods[0]?.adaptations ?? [];
   const videoReps = adaptations.filter((a) => a.contentType === 'video').flatMap((a) => a.representations);
   const audioReps = adaptations.filter((a) => a.contentType === 'audio').flatMap((a) => a.representations);
@@ -190,12 +193,14 @@ async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: Plan
   let video: DashRepresentation | undefined;
   if (videoReps.length > 0) {
     video = track.videoRepId ? videoReps.find((r) => r.id === track.videoRepId) : sortQualities(videoReps)[0];
-    if (!video) throw new UserFacingError(`Video representation "${track.videoRepId}" not found in manifest`, 'BAD_MANIFEST');
+    if (!video)
+      throw new UserFacingError(`Video representation "${track.videoRepId}" not found in manifest`, 'BAD_MANIFEST');
   }
   let audio: DashRepresentation | undefined;
   if (track.audioRepId) {
     audio = audioReps.find((r) => r.id === track.audioRepId);
-    if (!audio) throw new UserFacingError(`Audio representation "${track.audioRepId}" not found in manifest`, 'BAD_MANIFEST');
+    if (!audio)
+      throw new UserFacingError(`Audio representation "${track.audioRepId}" not found in manifest`, 'BAD_MANIFEST');
   } else if (audioReps.length > 0) {
     audio = [...audioReps].sort((a, b) => b.bandwidth - a.bandwidth)[0];
   }
@@ -254,7 +259,8 @@ export async function assembleStream(stream: StreamPlan): Promise<void> {
   } catch (e) {
     out.destroy();
     fs.rmSync(tmp, { force: true });
-    if ((e as { code?: string }).code === 'ENOSPC') throw new UserFacingError('Disk is full while assembling the download', 'DISK_FULL');
+    if ((e as { code?: string }).code === 'ENOSPC')
+      throw new UserFacingError('Disk is full while assembling the download', 'DISK_FULL');
     throw e;
   }
   fs.renameSync(tmp, stream.file);

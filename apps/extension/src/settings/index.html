@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>VidDock — Settings & Companion</title>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div class="settings-layout">
+      <!-- Header -->
+      <header class="settings-header glass-panel">
+        <div class="header-left">
+          <svg class="brand-logo" width="28" height="28" viewBox="0 0 32 32" fill="none">
+            <rect width="32" height="32" rx="8" fill="url(#logo-grad)" />
+            <path d="M11 10L23 16L11 22V10Z" fill="white" />
+            <path d="M9 25H23V27H9V25Z" fill="white" opacity="0.8" />
+            <defs>
+              <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#0071e3" />
+                <stop offset="1" stop-color="#5856d6" />
+              </linearGradient>
+            </defs>
+          </svg>
+          <div>
+            <h1 class="header-title">VidDock Settings</h1>
+            <p class="header-subtitle">Preferences, Filename Template & Native Companion</p>
+          </div>
+        </div>
+
+        <div class="header-right">
+          <button id="btn-open-dashboard" class="btn-secondary btn-sm">Open Dashboard →</button>
+        </div>
+      </header>
+
+      <main class="settings-main">
+        <!-- Section: Appearance -->
+        <section class="settings-section glass-card">
+          <h2 class="section-heading">Appearance</h2>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Theme Mode</label>
+              <p class="setting-description">Follow macOS system appearance or select a persistent theme.</p>
+            </div>
+            <div id="theme-segmented" class="segmented-control" style="width: 240px">
+              <button class="segment-btn active" data-theme="system">System</button>
+              <button class="segment-btn" data-theme="light">Light</button>
+              <button class="segment-btn" data-theme="dark">Dark</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Download Preferences -->
+        <section class="settings-section glass-card">
+          <h2 class="section-heading">Download Preferences</h2>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="pref-quality" class="setting-label">Preferred Video Quality</label>
+              <p class="setting-description">Default resolution selected when multiple stream qualities are found.</p>
+            </div>
+            <div class="select-wrapper" style="width: 200px">
+              <select id="pref-quality" class="select-apple">
+                <option value="best">Best Available</option>
+                <option value="1080">1080p Full HD</option>
+                <option value="720">720p HD</option>
+                <option value="480">480p SD</option>
+                <option value="360">360p</option>
+              </select>
+              <span class="select-chevron">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="pref-container" class="setting-label">Output Container Format</label>
+              <p class="setting-description">Container for remuxing streams without quality loss.</p>
+            </div>
+            <div class="select-wrapper" style="width: 200px">
+              <select id="pref-container" class="select-apple">
+                <option value="auto">Auto (Preserve Stream)</option>
+                <option value="mp4">MP4 (.mp4)</option>
+                <option value="mkv">Matroska (.mkv)</option>
+                <option value="webm">WebM (.webm)</option>
+              </select>
+              <span class="select-chevron">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </span>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label for="pref-concurrency" class="setting-label"
+                >Segment Concurrency: <span id="concurrency-val">6</span></label
+              >
+              <p class="setting-description">Number of parallel segment download workers per HLS/DASH stream.</p>
+            </div>
+            <div style="width: 200px">
+              <input id="pref-concurrency" type="range" min="1" max="16" value="6" class="range-slider" />
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Direct Downloads via Chrome</label>
+              <p class="setting-description">
+                Use Chrome's built-in download manager for simple MP4 and WebM video files.
+              </p>
+            </div>
+            <label class="switch">
+              <input id="pref-direct-chrome" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Completion Notifications</label>
+              <p class="setting-description">Show macOS notifications when video downloads finish or fail.</p>
+            </div>
+            <label class="switch">
+              <input id="pref-notifications" type="checkbox" />
+              <span class="slider"></span>
+            </label>
+          </div>
+        </section>
+
+        <!-- Section: Mediasite Lecture Preferences -->
+        <section class="settings-section glass-card">
+          <h2 class="section-heading">Mediasite Lecture Options</h2>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Default Dual-Stream Layout</label>
+              <p class="setting-description">
+                Composition strategy for presentations featuring slides and camera feeds.
+              </p>
+            </div>
+            <div id="mediasite-layout-segmented" class="segmented-control" style="width: 320px">
+              <button class="segment-btn active" data-layout="side-by-side">Side-by-Side</button>
+              <button class="segment-btn" data-layout="pip">Picture-in-Picture</button>
+              <button class="segment-btn" data-layout="multi-track">Multi-Track</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Filename Template Builder -->
+        <section class="settings-section glass-card">
+          <h2 class="section-heading">Filename Template Builder</h2>
+          <div class="template-builder">
+            <div class="template-input-row">
+              <input
+                id="filename-template-input"
+                type="text"
+                class="glass-input"
+                placeholder="{title} - {quality}"
+                style="width: 100%; padding: 8px 12px; font-size: var(--text-sm)"
+              />
+            </div>
+            <div class="token-chips">
+              <span class="token-chip" data-token="{title}">+ {title}</span>
+              <span class="token-chip" data-token="{quality}">+ {quality}</span>
+              <span class="token-chip" data-token="{date}">+ {date}</span>
+              <span class="token-chip" data-token="{id}">+ {id}</span>
+              <span class="token-chip" data-token="{site}">+ {site}</span>
+            </div>
+            <div class="template-preview-box">
+              <span class="preview-label">Live Preview:</span>
+              <span id="template-preview-text" class="preview-result">Video Title - 1080p - 2026-10-21.mp4</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Section: Native Companion Diagnostic Panel -->
+        <section id="companion" class="settings-section glass-card">
+          <div class="section-header-row">
+            <h2 class="section-heading">Native Companion Diagnostics</h2>
+            <button id="btn-test-companion" class="btn-primary btn-sm">Test Connection</button>
+          </div>
+
+          <div class="companion-status-box">
+            <div class="companion-status-header">
+              <div id="companion-badge" class="status-pill status-connecting">
+                <span class="status-dot"></span>
+                <span id="companion-status-text">Checking...</span>
+              </div>
+              <span id="companion-platform-text" class="companion-subtext">macOS</span>
+            </div>
+
+            <div class="diagnostic-grid">
+              <div class="diag-item">
+                <span class="diag-label">Host Version:</span>
+                <span id="diag-host-version" class="diag-val">--</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">Default Directory:</span>
+                <span id="diag-output-dir" class="diag-val">~/Downloads</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">FFmpeg Status:</span>
+                <span id="diag-ffmpeg" class="diag-val">--</span>
+              </div>
+              <div class="diag-item">
+                <span class="diag-label">ffprobe Status:</span>
+                <span id="diag-ffprobe" class="diag-val">--</span>
+              </div>
+            </div>
+
+            <div id="companion-help-box" class="companion-help-box hidden">
+              <h4>Native Companion Setup</h4>
+              <p>
+                The VidDock native companion is required for downloading HLS/DASH streams, decrypting segments, and
+                dual-track lecture remuxing.
+              </p>
+              <pre><code>cd /Users/jake/Desktop/VidDock && bash scripts/install-macos.sh</code></pre>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

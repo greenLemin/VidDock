@@ -94,7 +94,8 @@ export class HttpClient {
       }
       if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
         const next = new URL(res.headers.get('location') as string, url).toString();
-        if (!/^https?:/i.test(next)) throw new HttpError('Redirect to non-http URL blocked', res.status, 'BAD_REDIRECT', false);
+        if (!/^https?:/i.test(next))
+          throw new HttpError('Redirect to non-http URL blocked', res.status, 'BAD_REDIRECT', false);
         await res.body?.cancel();
         url = next;
         continue;
@@ -118,7 +119,12 @@ export class HttpClient {
         const err =
           e instanceof HttpError
             ? e
-            : new HttpError((e as Error).message, undefined, classifyFsError(e), (e as { code?: string }).code === 'ECONNRESET');
+            : new HttpError(
+                (e as Error).message,
+                undefined,
+                classifyFsError(e),
+                (e as { code?: string }).code === 'ECONNRESET',
+              );
         if (!err.retryable || attempt >= maxRetries) throw err;
         const delay = err.retryAfterMs ?? backoffDelay(attempt, retryBaseMs);
         onRetry?.(attempt, err, delay);
@@ -138,7 +144,11 @@ export class HttpClient {
     );
   }
 
-  async getText(url: string, signal: AbortSignal, maxBytes = 20 * 1024 * 1024): Promise<{ text: string; finalUrl: string }> {
+  async getText(
+    url: string,
+    signal: AbortSignal,
+    maxBytes = 20 * 1024 * 1024,
+  ): Promise<{ text: string; finalUrl: string }> {
     return this.withRetry(signal, async () => {
       const { res, finalUrl } = await this.request({ url }, signal);
       if (!res.ok) {
@@ -172,7 +182,12 @@ export class HttpClient {
     target: FetchTarget,
     dest: string,
     signal: AbortSignal,
-    opts: { resume?: boolean; onBytes?: (n: number) => void; onTotal?: (total: number) => void; transform?: (b: Buffer) => Buffer } = {},
+    opts: {
+      resume?: boolean;
+      onBytes?: (n: number) => void;
+      onTotal?: (total: number) => void;
+      transform?: (b: Buffer) => Buffer;
+    } = {},
   ): Promise<number> {
     if (fs.existsSync(dest)) return fs.statSync(dest).size;
     const part = `${dest}.part`;
@@ -217,7 +232,8 @@ export class HttpClient {
         await pipeline(Readable.fromWeb(res.body as never), counter, out, { signal });
       } catch (e) {
         if (signal.aborted) throw new AbortedError(String(signal.reason ?? 'aborted'));
-        if ((e as { code?: string }).code === 'ENOSPC') throw new HttpError('Disk is full', undefined, 'DISK_FULL', false);
+        if ((e as { code?: string }).code === 'ENOSPC')
+          throw new HttpError('Disk is full', undefined, 'DISK_FULL', false);
         const cause = (e as { cause?: { code?: string } }).cause;
         throw new HttpError(`Transfer interrupted: ${cause?.code ?? (e as Error).message}`, undefined, 'NETWORK', true);
       }

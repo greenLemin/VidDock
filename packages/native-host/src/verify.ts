@@ -86,7 +86,10 @@ export async function verifyOutput(
       signal,
     );
     if (r.code !== 0 || r.stderr.trim().length > 0) {
-      throw new UserFacingError(`Decode test failed at ${ss.toFixed(0)}s: ${r.stderr.trim().split('\n')[0] ?? 'unknown error'}`, 'VERIFY_FAILED');
+      throw new UserFacingError(
+        `Decode test failed at ${ss.toFixed(0)}s: ${r.stderr.trim().split('\n')[0] ?? 'unknown error'}`,
+        'VERIFY_FAILED',
+      );
     }
   }
   return { warnings, probe: p };

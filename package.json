@@ -17,6 +17,8 @@
     "build": "npm run build:host && npm run build:extension",
     "build:extension": "node scripts/build-extension.mjs",
     "build:host": "node scripts/build-host.mjs",
+    "host:install": "bash scripts/install-macos.sh",
+    "host:uninstall": "bash scripts/uninstall-macos.sh",
     "icons": "node scripts/generate-icons.mjs",
     "test": "vitest run --project unit --project integration",
     "test:unit": "vitest run --project unit",

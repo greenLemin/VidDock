@@ -36,7 +36,9 @@ export class HostServer {
         (msg) => void this.handle(msg),
         (err) => this.log(`protocol error: ${err.message}`),
       );
-      this.input.on('data', (chunk: Buffer | string) => decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      this.input.on('data', (chunk: Buffer | string) =>
+        decoder.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+      );
       const end = () => {
         void this.close().then(resolve);
       };

@@ -1,5 +1,5 @@
 /** Extension-internal messaging (popup / manager <-> service worker, content scripts -> service worker). */
-import type { DownloadTask, MediaItem, Settings } from './types.ts';
+import type { DownloadTask, DualStreamLayout, MediaItem, Settings } from './types.ts';
 
 export interface NativeStatus {
   connected: boolean;
@@ -19,13 +19,19 @@ export interface StartDownloadParams {
   container?: Settings['container'];
   /** Download every feed of a presentation group into one multi-track file. */
   mergeGroup?: boolean;
+  /** Dual-stream layout for multi-track presentations (default: multi-track). */
+  layout?: DualStreamLayout;
 }
 
 export type BgRequest =
   | { type: 'getState'; tabId?: number }
   | { type: 'refresh'; tabId: number }
   | { type: 'startDownload'; params: StartDownloadParams }
-  | { type: 'taskAction'; taskId: string; action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' }
+  | {
+      type: 'taskAction';
+      taskId: string;
+      action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal';
+    }
   | { type: 'clearCompleted' }
   | { type: 'getSettings' }
   | { type: 'setSettings'; settings: Partial<Settings> }

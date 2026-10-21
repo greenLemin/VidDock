@@ -51,9 +51,10 @@ const ARRAY_TAGS = new Set([
 
 export function parseIsoDuration(value: string | undefined): number {
   if (!value) return 0;
-  const m = /^P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(
-    value.trim(),
-  );
+  const m =
+    /^P(?:(\d+(?:\.\d+)?)Y)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/.exec(
+      value.trim(),
+    );
   if (!m) return 0;
   const n = (i: number) => (m[i] ? parseFloat(m[i] as string) : 0);
   return n(3) * 86400 + n(4) * 3600 + n(5) * 60 + n(6);
@@ -71,24 +72,27 @@ function baseOf(node: Node, parent: string): string {
 }
 
 function formatTemplate(tpl: string, vars: { id: string; bandwidth: number; number?: number; time?: number }): string {
-  return tpl.replace(/\$(RepresentationID|Bandwidth|Number|Time)(%0(\d+)d)?\$|\$\$/g, (m, name: string, _f, width: string) => {
-    if (m === '$$') return '$';
-    let val: string;
-    switch (name) {
-      case 'RepresentationID':
-        val = vars.id;
-        break;
-      case 'Bandwidth':
-        val = String(vars.bandwidth);
-        break;
-      case 'Number':
-        val = String(vars.number ?? 0);
-        break;
-      default:
-        val = String(vars.time ?? 0);
-    }
-    return width ? val.padStart(Number(width), '0') : val;
-  });
+  return tpl.replace(
+    /\$(RepresentationID|Bandwidth|Number|Time)(%0(\d+)d)?\$|\$\$/g,
+    (m, name: string, _f, width: string) => {
+      if (m === '$$') return '$';
+      let val: string;
+      switch (name) {
+        case 'RepresentationID':
+          val = vars.id;
+          break;
+        case 'Bandwidth':
+          val = String(vars.bandwidth);
+          break;
+        case 'Number':
+          val = String(vars.number ?? 0);
+          break;
+        default:
+          val = String(vars.time ?? 0);
+      }
+      return width ? val.padStart(Number(width), '0') : val;
+    },
+  );
 }
 
 function mergeTemplate(parent: Node, child: Node): Node {
@@ -231,7 +235,11 @@ export function parseMpd(xml: string, mpdUrl: string): DashManifest {
       const mimeType = set['@_mimeType'] ?? arr(set.Representation)[0]?.['@_mimeType'];
       const rawType: string = set['@_contentType'] ?? String(mimeType ?? '').split('/')[0] ?? '';
       const contentType: DashAdaptation['contentType'] =
-        rawType === 'video' || rawType === 'audio' ? rawType : rawType === 'text' || /ttml|vtt/.test(String(mimeType)) ? 'text' : 'unknown';
+        rawType === 'video' || rawType === 'audio'
+          ? rawType
+          : rawType === 'text' || /ttml|vtt/.test(String(mimeType))
+            ? 'text'
+            : 'unknown';
       const reps: DashRepresentation[] = [];
       for (const rep of arr(set.Representation)) {
         if (contentType === 'text') continue;
@@ -242,7 +250,9 @@ export function parseMpd(xml: string, mpdUrl: string): DashManifest {
         contentType,
         mimeType,
         lang: set['@_lang'],
-        label: arr(set.Label)[0] ? String(typeof arr(set.Label)[0] === 'object' ? arr(set.Label)[0]['#text'] : arr(set.Label)[0]) : undefined,
+        label: arr(set.Label)[0]
+          ? String(typeof arr(set.Label)[0] === 'object' ? arr(set.Label)[0]['#text'] : arr(set.Label)[0])
+          : undefined,
         representations: reps,
       });
     }
@@ -250,7 +260,6 @@ export function parseMpd(xml: string, mpdUrl: string): DashManifest {
   });
 
   const durationSec =
-    mpdDuration ||
-    (periods[0]?.adaptations[0]?.representations[0]?.segments.reduce((s, x) => s + x.duration, 0) ?? 0);
+    mpdDuration || (periods[0]?.adaptations[0]?.representations[0]?.segments.reduce((s, x) => s + x.duration, 0) ?? 0);
   return { isLive, durationSec, periods, drm };
 }

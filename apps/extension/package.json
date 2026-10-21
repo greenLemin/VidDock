@@ -4,6 +4,13 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs",
+    "dev": "node ../../scripts/build-extension.mjs --watch",
+    "icons": "node ../../scripts/generate-icons.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@viddock/shared": "*"
   }
