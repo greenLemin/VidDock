@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v1.0.0)'
-        required: true
-        default: 'v1.0.0'
+        description: 'Release tag (optional override, e.g. v1.0.1; defaults to package.json version)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -42,16 +42,33 @@ jobs:
       - name: E2E test suite
         run: npm run test:e2e
 
+      - name: Derive release version
+        id: version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          PKG_TAG="v${PKG_VERSION}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [ -n "${{ github.ref_name }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="$PKG_TAG"
+          fi
+          echo "pkg_version=${PKG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pkg_tag=${PKG_TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Build release packages
         run: npm run package
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: |
-            release/VidDock-v1.0.0-chrome.zip
-            release/VidDock-v1.0.0-macos-installer.zip
-            release/VidDock-v1.0.0-source.zip
+            release/VidDock-${{ steps.version.outputs.pkg_tag }}-chrome.zip
+            release/VidDock-${{ steps.version.outputs.pkg_tag }}-macos-installer.zip
+            release/VidDock-${{ steps.version.outputs.pkg_tag }}-source.zip
             release/SHA256SUMS.txt
           generate_release_notes: true
           draft: false

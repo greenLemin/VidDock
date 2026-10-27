@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   validate:
-    name: Lint, Test & Build
+    name: Lint, Test & Build (Ubuntu)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,9 +60,11 @@ jobs:
 
       - name: Verify release packages exist
         run: |
-          test -f release/VidDock-v1.0.0-chrome.zip
-          test -f release/VidDock-v1.0.0-macos-installer.zip
-          test -f release/VidDock-v1.0.0-source.zip
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v${VERSION}"
+          test -f "release/VidDock-${TAG}-chrome.zip"
+          test -f "release/VidDock-${TAG}-macos-installer.zip"
+          test -f "release/VidDock-${TAG}-source.zip"
           test -f release/SHA256SUMS.txt
           cat release/SHA256SUMS.txt
 
@@ -72,3 +74,43 @@ jobs:
           name: viddock-release-packages
           path: release/*
           if-no-files-found: error
+
+  macos:
+    name: macOS Companion & Tests
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install FFmpeg
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
+
+      - name: Verify FFmpeg
+        run: |
+          ffmpeg -version
+          ffprobe -version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension & host
+        run: npm run build
+
+      - name: Unit & Integration tests
+        run: npm test
+
+      - name: E2E test suite
+        run: npm run test:e2e
+
+      - name: Install macOS native companion host
+        run: bash scripts/install-macos.sh pknljchblnkgfmfcfdfkddedjofmjbkj
+
+      - name: Verify installation
+        run: bash scripts/verify-installation.sh
