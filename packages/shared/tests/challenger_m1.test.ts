@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { parseMpd } from '../src/dash.ts';
+import { describeDash } from '../src/describe.ts';
 import { parsePlayerOptions } from '../src/mediasite.ts';
 import { validateDownloadRequest } from '../src/protocol.ts';
 import type { DualStreamLayout } from '../src/types.ts';
@@ -648,5 +650,150 @@ describe('CHALLENGER: validateDownloadRequest Layout Empirical Stress Suite', ()
         'Invalid request: layout unsupported',
       );
     });
+  });
+});
+
+describe('TASK-P1-01: Multi-Period MPEG-DASH Manifest Assembly', () => {
+  const multiPeriodCompatibleXml = `<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-live:2011" type="static" mediaPresentationDuration="PT6.0S" minBufferTime="PT4.0S">
+  <Period id="0" start="PT0.0S" duration="PT4.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" mimeType="video/mp4" codecs="avc1.42c00d" bandwidth="160000" width="320" height="240">
+        <SegmentTemplate timescale="1000" initialization="init-0.m4s" media="chunk-0-$Number$.m4s" startNumber="1">
+          <SegmentTimeline>
+            <S t="0" d="2000" r="1" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="1" contentType="audio">
+      <Representation id="2" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="64000">
+        <SegmentTemplate timescale="1000" initialization="init-2.m4s" media="chunk-2-$Number$.m4s" startNumber="1">
+          <SegmentTimeline>
+            <S t="0" d="2000" r="1" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+  <Period id="1" start="PT4.0S" duration="PT2.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" mimeType="video/mp4" codecs="avc1.42c00d" bandwidth="160000" width="320" height="240">
+        <SegmentTemplate timescale="1000" initialization="init-0.m4s" media="chunk-0-$Number$.m4s" startNumber="3">
+          <SegmentTimeline>
+            <S t="4000" d="2000" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+    <AdaptationSet id="1" contentType="audio">
+      <Representation id="2" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="64000">
+        <SegmentTemplate timescale="1000" initialization="init-2.m4s" media="chunk-2-$Number$.m4s" startNumber="3">
+          <SegmentTimeline>
+            <S t="4000" d="2000" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+
+  it('describeDash accepts multi-period manifest with compatible codecs', () => {
+    const desc = describeDash(multiPeriodCompatibleXml, 'https://example.com/manifest.mpd');
+    expect(desc.unsupportedReason).toBeUndefined();
+    expect(desc.durationSec).toBe(6.0);
+    expect(desc.hasVideo).toBe(true);
+    expect(desc.hasAudio).toBe(true);
+    expect(desc.qualities).toHaveLength(1);
+    expect(desc.qualities[0]?.height).toBe(240);
+    expect(desc.audioTracks).toHaveLength(1);
+  });
+
+  it('describeDash rejects multi-period manifest with incompatible video codecs', () => {
+    const incompatibleXml = multiPeriodCompatibleXml.replace(
+      'Period id="1" start="PT4.0S" duration="PT2.0S">\n    <AdaptationSet id="0" contentType="video">\n      <Representation id="0" mimeType="video/mp4" codecs="avc1.42c00d"',
+      'Period id="1" start="PT4.0S" duration="PT2.0S">\n    <AdaptationSet id="0" contentType="video">\n      <Representation id="0" mimeType="video/webm" codecs="vp09.00.10.08"',
+    );
+    const desc = describeDash(incompatibleXml, 'https://example.com/manifest.mpd');
+    expect(desc.unsupportedReason).toBe('Multi-period manifest has incompatible video codecs across periods');
+  });
+
+  it('describeDash rejects multi-period manifest with missing video adaptation in period 2', () => {
+    const missingVideoXml = `<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" profiles="urn:mpeg:dash:profile:isoff-live:2011" type="static">
+  <Period id="0" start="PT0.0S" duration="PT4.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" mimeType="video/mp4" codecs="avc1.42c00d" bandwidth="160000" width="320" height="240">
+        <SegmentTemplate timescale="1000" media="chunk-0-$Number$.m4s" startNumber="1">
+          <SegmentTimeline><S t="0" d="4000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+  <Period id="1" start="PT4.0S" duration="PT2.0S">
+    <AdaptationSet id="1" contentType="audio">
+      <Representation id="2" mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="64000">
+        <SegmentTemplate timescale="1000" media="chunk-2-$Number$.m4s" startNumber="1">
+          <SegmentTimeline><S t="0" d="2000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+    const desc = describeDash(missingVideoXml, 'https://example.com/manifest.mpd');
+    expect(desc.unsupportedReason).toBe('Multi-period manifest has missing video in period 2');
+  });
+
+  it('parseMpd calculates periodDuration when @duration is omitted but @start is present', () => {
+    const startOnlyXml = `<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT10.0S">
+  <Period id="0" start="PT0.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" bandwidth="100000" width="320" height="240">
+        <SegmentTemplate timescale="1000" media="chunk-0-$Number$.m4s" startNumber="1">
+          <SegmentTimeline><S t="0" d="4000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+  <Period id="1" start="PT4.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" bandwidth="100000" width="320" height="240">
+        <SegmentTemplate timescale="1000" media="chunk-0-$Number$.m4s" startNumber="2">
+          <SegmentTimeline><S t="4000" d="6000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+    const mpd = parseMpd(startOnlyXml, 'https://example.com/manifest.mpd');
+    expect(mpd.periods).toHaveLength(2);
+    expect(mpd.durationSec).toBe(10);
+  });
+
+  it('parseMpd calculates total durationSec as sum across periods when mediaPresentationDuration is absent', () => {
+    const noMpdDurationXml = `<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static">
+  <Period id="0" start="PT0.0S" duration="PT3.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" bandwidth="100000" width="320" height="240">
+        <SegmentTemplate timescale="1000" media="chunk-0-$Number$.m4s" startNumber="1">
+          <SegmentTimeline><S t="0" d="3000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+  <Period id="1" start="PT3.0S" duration="PT5.0S">
+    <AdaptationSet id="0" contentType="video">
+      <Representation id="0" bandwidth="100000" width="320" height="240">
+        <SegmentTemplate timescale="1000" media="chunk-0-$Number$.m4s" startNumber="2">
+          <SegmentTimeline><S t="3000" d="5000" /></SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+    const mpd = parseMpd(noMpdDurationXml, 'https://example.com/manifest.mpd');
+    expect(mpd.durationSec).toBe(8.0);
   });
 });

@@ -66,6 +66,12 @@ export class TaskManager {
     return job.info;
   }
 
+  stop(taskId: string): TaskInfo {
+    const job = this.require(taskId);
+    if (isActive(job.state)) job.stop();
+    return job.info;
+  }
+
   remove(taskId: string): void {
     const job = this.jobs.get(taskId);
     if (!job) return;

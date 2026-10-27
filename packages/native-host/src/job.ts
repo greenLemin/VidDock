@@ -1,12 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { emptyProgress, parseHls, sanitizeFilename } from '@viddock/shared';
+import { emptyProgress, parseHls, parseMpd, sanitizeFilename } from '@viddock/shared';
 import type { NativeDownloadRequest, TaskInfo, TaskProgress, TaskState } from '@viddock/shared';
 import { findBinary, probe, runFfmpeg } from './ffmpeg.ts';
-import { AbortedError, HttpClient, HttpError } from './http.ts';
+import { AbortedError, HttpClient, HttpError, sleep } from './http.ts';
 import { buildMuxArgs, chooseContainer } from './mux.ts';
 import type { MuxInput, MuxSubtitle } from './mux.ts';
-import { assembleStream, decryptSegment, defaultIv, planTrack, UserFacingError } from './plans.ts';
+import {
+  assembleStream,
+  decryptSegment,
+  defaultIv,
+  hexIv,
+  pad,
+  parseRange,
+  planTrack,
+  UserFacingError,
+} from './plans.ts';
 import type { Part, StreamPlan, TrackPlan } from './plans.ts';
 import { PathError, resolveOutputDir } from './framing.ts';
 import { verifyOutput } from './verify.ts';
@@ -103,6 +112,8 @@ export class DownloadJob {
   private timer?: NodeJS.Timeout;
   private lastEmit = 0;
   private keyCache = new Map<string, Promise<Buffer>>();
+  private isLive = false;
+  private stopped = false;
   readonly workDir: string;
 
   constructor(
@@ -146,7 +157,13 @@ export class DownloadJob {
     this.setState('paused');
   }
 
-  abort(reason: 'pause' | 'cancel' | 'shutdown'): void {
+  stop(): void {
+    this.stopped = true;
+    this.abort('stop');
+  }
+
+  abort(reason: 'pause' | 'cancel' | 'shutdown' | 'stop'): void {
+    if (reason === 'stop') this.stopped = true;
     this.controller.abort(reason);
   }
 
@@ -219,6 +236,12 @@ export class DownloadJob {
       );
     }
 
+    this.isLive = streams.some((s) => s.isLive);
+    const liveMode = req.options.liveMode ?? (this.isLive ? 'dvr' : undefined);
+    if (this.isLive) {
+      this.info = { ...this.info, isLive: true, liveMode };
+    }
+
     const allParts: Part[] = streams.flatMap((s) => s.parts);
     this.tracker.segTotal = allParts.length;
     const totalDur = Math.max(0, ...plans.map((p) => p.durationSec ?? 0));
@@ -227,12 +250,63 @@ export class DownloadJob {
     // ---- Download ----
     this.setState('downloading');
     this.tracker.stage = 'Downloading';
-    await this.downloadParts(allParts, client, signal);
-    for (const s of streams) await assembleStream(s);
+    let totalSkipped = 0;
+    let livePreserved = false;
+    let warnings: string[] = [];
+
+    if (this.isLive && (liveMode === 'duration' || liveMode === 'until_stopped')) {
+      try {
+        await this.downloadLiveStream(streams, client, signal);
+      } catch (e) {
+        if (this.isLive && (signal.aborted || this.stopped)) {
+          livePreserved = true;
+        } else {
+          throw e;
+        }
+      }
+    } else {
+      try {
+        const { skippedParts } = await this.downloadParts(allParts, client, signal);
+        totalSkipped += skippedParts.size;
+      } catch (e) {
+        if (this.isLive && (signal.aborted || this.stopped)) {
+          livePreserved = true;
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    if (this.isLive && (signal.aborted || this.stopped || livePreserved)) {
+      livePreserved = true;
+      for (const s of streams) {
+        s.parts = s.parts.filter((p) => fs.existsSync(p.dest) && fs.statSync(p.dest).size > 0);
+        if (s.parts.length === 0) {
+          throw new UserFacingError('No media segments were downloaded before stopping', 'NO_SEGMENTS');
+        }
+      }
+      warnings.push('Recording stopped; partial capture preserved.');
+    }
+
+    let assembleSkipped = 0;
+    for (const s of streams) {
+      const res = await assembleStream(s);
+      assembleSkipped += res.skippedParts;
+    }
     this.downloadDone = true;
 
+    const finalSkipped = Math.max(totalSkipped, assembleSkipped);
+    if (finalSkipped > 0 && !livePreserved) {
+      const percent = Math.round((finalSkipped / Math.max(1, allParts.length)) * 100);
+      warnings.push(
+        `Missing ${finalSkipped} of ${allParts.length} media segments (${percent}%). Captured output may contain playback stutters at missing segment boundaries.`,
+      );
+    }
+
+    const procSignal = livePreserved ? new AbortController().signal : signal;
+
     // ---- Subtitles ----
-    const subs = await this.fetchSubtitles(client, signal);
+    const subs = await this.fetchSubtitles(client, procSignal);
 
     // ---- Process ----
     this.tracker.stage = 'Processing';
@@ -241,7 +315,6 @@ export class DownloadJob {
 
     let finalTmp: string;
     let ext: string;
-    let warnings: string[] = [];
     const single = plans.length === 1 ? plans[0] : undefined;
     const singleStream = single?.streams.length === 1 ? single.streams[0] : undefined;
     const keepOriginal = !!(
@@ -255,7 +328,7 @@ export class DownloadJob {
       finalTmp = singleStream.file;
       ext = single.originalExt as string;
     } else {
-      inputs = await this.probeInputs(streams, ffprobe as string, signal);
+      inputs = await this.probeInputs(streams, ffprobe as string, procSignal);
       const embed = req.subtitleMode === 'embed' ? subs : [];
       const choice = chooseContainer(req.container, inputs, req.layout);
       if (choice.note) warnings.push(choice.note);
@@ -269,7 +342,7 @@ export class DownloadJob {
         title: req.title,
         layout: req.layout,
       });
-      const r = await runFfmpeg(ffmpeg as string, args, signal);
+      const r = await runFfmpeg(ffmpeg as string, args, procSignal);
       if (r.code !== 0) {
         throw new UserFacingError(`FFmpeg failed (exit ${r.code}): ${lastLine(r.stderr)}`, 'FFMPEG_FAILED');
       }
@@ -279,14 +352,19 @@ export class DownloadJob {
     this.tracker.stage = 'Verifying';
     this.setState('verifying');
     if (ffmpeg && ffprobe) {
-      const p = inputs.length > 0 ? inputs : await this.probeInputs(streams, ffprobe, signal);
+      const p = inputs.length > 0 ? inputs : await this.probeInputs(streams, ffprobe, procSignal);
       const expectVideo = p.some((i) => i.probe.streams.some((s) => s.codec_type === 'video'));
       const expectAudio = p.some((i) => i.probe.streams.some((s) => s.codec_type === 'audio'));
       const v = await verifyOutput(
         { ffmpeg, ffprobe },
         finalTmp,
-        { video: expectVideo, audio: expectAudio, durationSec: expectedDuration },
-        signal,
+        {
+          video: expectVideo,
+          audio: expectAudio,
+          durationSec: this.isLive ? undefined : expectedDuration,
+          skippedSegments: finalSkipped,
+        },
+        procSignal,
       );
       warnings = [...warnings, ...v.warnings];
     } else {
@@ -374,8 +452,215 @@ export class DownloadJob {
     return p;
   }
 
-  private async downloadParts(parts: Part[], client: HttpClient, signal: AbortSignal): Promise<void> {
+  private async downloadLiveStream(streams: StreamPlan[], client: HttpClient, signal: AbortSignal): Promise<void> {
     const conc = this.req.options.segmentConcurrency;
+    const toleranceRate = this.req.options.segmentToleranceRate ?? 0.02;
+    const targetDurationSec = Math.max(1, streams[0]?.targetDuration ?? 2);
+    const liveMode = this.req.options.liveMode ?? 'dvr';
+    const liveDurationLimit = this.req.options.liveDurationSeconds;
+
+    const seenUrls = new Set<string>();
+    const queue: { p: Part; i: number; s: StreamPlan }[] = [];
+    const skippedParts = new Set<number>();
+    let partIndex = 0;
+    let accumulatedDuration = 0;
+    let pollingEnded = false;
+
+    for (const s of streams) {
+      for (const p of s.parts) {
+        seenUrls.add(p.url);
+        queue.push({ p, i: partIndex++, s });
+      }
+      accumulatedDuration += s.durationSec ?? 0;
+    }
+    this.tracker.segTotal = queue.length;
+
+    const pollController = new AbortController();
+    const onSignalAbort = () => pollController.abort();
+    signal.addEventListener('abort', onSignalAbort, { once: true });
+
+    let wakeWorker: (() => void) | null = null;
+    const notifyWorkers = () => {
+      if (wakeWorker) {
+        const cb = wakeWorker;
+        wakeWorker = null;
+        cb();
+      }
+    };
+
+    const poller = async () => {
+      while (!pollController.signal.aborted && !this.stopped && !pollingEnded) {
+        if (liveMode === 'duration' && liveDurationLimit && accumulatedDuration >= liveDurationLimit) {
+          pollingEnded = true;
+          break;
+        }
+
+        try {
+          await sleep(Math.min(targetDurationSec * 1000, 2000), pollController.signal);
+        } catch {
+          break;
+        }
+
+        if (pollController.signal.aborted || this.stopped) break;
+
+        for (const s of streams) {
+          if (!s.pollUrl) continue;
+          try {
+            const { text, finalUrl } = await client.getText(s.pollUrl, pollController.signal);
+            if (s.type === 'hls') {
+              const pl = parseHls(text, finalUrl);
+              if (pl.type === 'media') {
+                for (const seg of pl.segments) {
+                  if (!seenUrls.has(seg.url)) {
+                    seenUrls.add(seg.url);
+                    const dest = path.join(path.dirname(s.parts[0]?.dest ?? s.file), `${pad(s.parts.length)}.seg`);
+                    const encrypted = seg.key && seg.key.method === 'AES-128' && seg.key.url;
+                    const newPart: Part = {
+                      url: seg.url,
+                      range: seg.byteRange,
+                      dest,
+                      key: encrypted
+                        ? { url: seg.key?.url as string, iv: hexIv(seg.key?.iv), seq: seg.seq }
+                        : undefined,
+                    };
+                    s.parts.push(newPart);
+                    queue.push({ p: newPart, i: partIndex++, s });
+                    this.tracker.segTotal++;
+                    accumulatedDuration += seg.duration;
+                    notifyWorkers();
+                    if (liveMode === 'duration' && liveDurationLimit && accumulatedDuration >= liveDurationLimit) {
+                      pollingEnded = true;
+                      break;
+                    }
+                  }
+                }
+                if (pl.endList) pollingEnded = true;
+              }
+            } else if (s.type === 'dash') {
+              const mpd = parseMpd(text, finalUrl);
+              const period = mpd.periods[0];
+              const reps = period?.adaptations.flatMap((a) => a.representations) ?? [];
+              const matched = (s.dashRepId ? reps.find((r) => r.id === s.dashRepId) : reps[0]) ?? reps[0];
+              if (matched) {
+                for (const seg of matched.segments) {
+                  if (!seenUrls.has(seg.url)) {
+                    seenUrls.add(seg.url);
+                    const dest = path.join(path.dirname(s.parts[0]?.dest ?? s.file), `${pad(s.parts.length)}.seg`);
+                    const newPart: Part = {
+                      url: seg.url,
+                      range: parseRange(seg.range),
+                      dest,
+                    };
+                    s.parts.push(newPart);
+                    queue.push({ p: newPart, i: partIndex++, s });
+                    this.tracker.segTotal++;
+                    accumulatedDuration += seg.duration;
+                    notifyWorkers();
+                    if (liveMode === 'duration' && liveDurationLimit && accumulatedDuration >= liveDurationLimit) {
+                      pollingEnded = true;
+                      break;
+                    }
+                  }
+                }
+              }
+              if (!mpd.isLive) pollingEnded = true;
+            }
+          } catch {
+            // Ignore transient playlist poll errors
+          }
+        }
+      }
+      pollingEnded = true;
+      notifyWorkers();
+    };
+
+    let nextQueueIdx = 0;
+    let workerFailure: unknown;
+
+    const worker = async () => {
+      while (!signal.aborted && !this.stopped) {
+        if (nextQueueIdx < queue.length) {
+          const item = queue[nextQueueIdx++];
+          if (!item) continue;
+          const { p, i } = item;
+          try {
+            if (fs.existsSync(p.dest)) {
+              const size = fs.statSync(p.dest).size;
+              this.tracker.addBytes(size);
+            } else {
+              let transform: ((b: Buffer) => Buffer) | undefined;
+              if (p.key) {
+                const key = await this.getKey(p.key.url, client, signal);
+                const iv = p.key.iv ?? defaultIv(p.key.seq);
+                transform = (b) => decryptSegment(b, key, iv);
+              }
+              await client.downloadToFile({ url: p.url, range: p.range }, p.dest, signal, {
+                resume: p.resume,
+                transform,
+                onBytes: (n) => this.tracker.addBytes(n),
+              });
+            }
+            this.tracker.segDone += 1;
+            this.emit();
+          } catch (e) {
+            if (signal.aborted || this.stopped || e instanceof AbortedError) return;
+            const is404 = e instanceof HttpError && e.status === 404;
+            if (is404 && !p.isInit) {
+              const wouldSkip = skippedParts.size + 1;
+              if (wouldSkip / Math.max(1, queue.length) <= toleranceRate + 1e-9) {
+                skippedParts.add(i);
+                const partialFile = `${p.dest}.part`;
+                if (fs.existsSync(partialFile)) fs.rmSync(partialFile, { force: true });
+                this.tracker.segDone += 1;
+                this.emit();
+                continue;
+              }
+            }
+            if (workerFailure === undefined) {
+              if (is404) {
+                const reason = p.isInit
+                  ? 'Initialization segment is missing (HTTP 404)'
+                  : `Segment ${i + 1} of ${queue.length} is missing (HTTP 404). Missing segments exceed tolerance (${Math.round(toleranceRate * 100)}%)`;
+                workerFailure = new UserFacingError(reason, 'SEGMENT_MISSING');
+              } else {
+                workerFailure = e;
+              }
+            }
+            pollController.abort();
+            return;
+          }
+        } else if (pollingEnded) {
+          return;
+        } else {
+          await new Promise<void>((res) => {
+            wakeWorker = res;
+            if (pollingEnded || nextQueueIdx < queue.length || signal.aborted || this.stopped) res();
+          });
+        }
+      }
+    };
+
+    const pollerPromise = poller();
+    const workers = Promise.all(Array.from({ length: Math.min(conc, Math.max(1, queue.length || 1)) }, worker));
+
+    await Promise.race([workers, pollerPromise.then(() => workers)]);
+    pollController.abort();
+    signal.removeEventListener('abort', onSignalAbort);
+    notifyWorkers();
+    await Promise.allSettled([pollerPromise, workers]);
+
+    if (workerFailure !== undefined && !this.stopped && !signal.aborted) {
+      throw workerFailure;
+    }
+  }
+
+  private async downloadParts(
+    parts: Part[],
+    client: HttpClient,
+    signal: AbortSignal,
+  ): Promise<{ skippedParts: Set<number> }> {
+    const conc = this.req.options.segmentConcurrency;
+    const toleranceRate = this.req.options.segmentToleranceRate ?? 0.02;
     const inner = new AbortController();
     const onAbort = () => inner.abort(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });
@@ -383,6 +668,7 @@ export class DownloadJob {
     let failure: unknown;
     const queue = parts.map((p, i) => ({ p, i }));
     const total = parts.length;
+    const skippedParts = new Set<number>();
 
     const worker = async () => {
       while (!inner.signal.aborted) {
@@ -410,11 +696,28 @@ export class DownloadJob {
           this.tracker.segDone += 1;
           this.emit();
         } catch (e) {
-          if (!(e instanceof AbortedError) && failure === undefined) {
-            failure =
-              e instanceof HttpError && e.status === 404
-                ? new UserFacingError(`Segment ${i + 1} of ${total} is missing (HTTP 404)`, 'SEGMENT_MISSING')
-                : e;
+          if (e instanceof AbortedError) return;
+          const is404 = e instanceof HttpError && e.status === 404;
+          if (is404 && !p.isInit) {
+            const wouldSkip = skippedParts.size + 1;
+            if (wouldSkip / total <= toleranceRate + 1e-9) {
+              skippedParts.add(i);
+              const partialFile = `${p.dest}.part`;
+              if (fs.existsSync(partialFile)) fs.rmSync(partialFile, { force: true });
+              this.tracker.segDone += 1;
+              this.emit();
+              continue;
+            }
+          }
+          if (failure === undefined) {
+            if (is404) {
+              const reason = p.isInit
+                ? 'Initialization segment is missing (HTTP 404)'
+                : `Segment ${i + 1} of ${total} is missing (HTTP 404). Missing segments exceed tolerance (${Math.round(toleranceRate * 100)}%)`;
+              failure = new UserFacingError(reason, 'SEGMENT_MISSING');
+            } else {
+              failure = e;
+            }
             inner.abort('failure');
           }
           return;
@@ -428,6 +731,7 @@ export class DownloadJob {
     }
     if (failure !== undefined) throw failure;
     if (signal.aborted) throw new AbortedError(String(signal.reason));
+    return { skippedParts };
   }
 }
 

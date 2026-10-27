@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { findBinary, probe, runFfmpeg, type ProbeResult } from '../../packages/native-host/src/ffmpeg.ts';
+import { DownloadJob } from '../../packages/native-host/src/job.ts';
 import { buildMuxArgs, chooseContainer, type MuxInput } from '../../packages/native-host/src/mux.ts';
 import { analyzeProbe } from '../../packages/native-host/src/verify.ts';
+import { ensureFixtures } from '../helpers/fixtures.ts';
+import { TestServer } from '../helpers/server.ts';
 
 const execFileP = promisify(execFile);
 
@@ -782,6 +785,213 @@ describe('M1 Stress Tests: Multi-stream edge cases in single input', () => {
       const subStream = resProbe.streams.find((s) => s.codec_type === 'subtitle');
       expect(subStream).toBeDefined();
       expect(subStream?.codec_name).toBe('mov_text');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('TASK-P1-02: Segment Download Skip Resilience & Partial Stream Assembly', () => {
+  let fixtureDir: string;
+  let server: TestServer;
+
+  beforeAll(async () => {
+    process.env.VIDDOCK_ALLOWED_ROOT = os.tmpdir();
+    fixtureDir = await ensureFixtures();
+    server = new TestServer(fixtureDir);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  beforeEach(() => {
+    server.reset();
+  });
+
+  it('retries and succeeds when transient 404 occurs on segment download', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-transient-404-'));
+    try {
+      server.rules.push({
+        match: /seg001\.ts/,
+        failCount: 2,
+        status: 404,
+      });
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-transient-404',
+          title: 'Transient 404 Test',
+          fileName: 'transient_404',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/hls/v120/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 1,
+            maxRetries: 3,
+            retryBaseMs: 10,
+            segmentToleranceRate: 0.02,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+      expect(job.info.warnings).toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('succeeds with warning when missing segments are within tolerance rate (1/50 = 2% <= 2%)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-tolerance-pass-'));
+    const fixture50 = path.join(fixtureDir, 'stream50-pass');
+    fs.mkdirSync(fixture50, { recursive: true });
+
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:2', '#EXT-X-MEDIA-SEQUENCE:0'];
+      for (let i = 0; i < 50; i++) {
+        const segName = `seg${String(i).padStart(3, '0')}.ts`;
+        lines.push('#EXTINF:2.0,', segName);
+        if (i !== 10) {
+          fs.copyFileSync(segSource, path.join(fixture50, segName));
+        }
+      }
+      lines.push('#EXT-X-ENDLIST', '');
+      fs.writeFileSync(path.join(fixture50, 'index.m3u8'), lines.join('\n'));
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-tol-pass',
+          title: 'Tolerance Pass Test',
+          fileName: 'tol_pass',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/stream50-pass/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 4,
+            maxRetries: 0,
+            retryBaseMs: 10,
+            segmentToleranceRate: 0.02,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+      expect(job.info.warnings?.some((w) => w.includes('Missing 1 of 50 media segments'))).toBe(true);
+    } finally {
+      fs.rmSync(fixture50, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with SEGMENT_MISSING when missing segments exceed tolerance rate (2/50 = 4% > 2%)', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-tolerance-fail-'));
+    const fixture50 = path.join(fixtureDir, 'stream50-fail');
+    fs.mkdirSync(fixture50, { recursive: true });
+
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:2', '#EXT-X-MEDIA-SEQUENCE:0'];
+      for (let i = 0; i < 50; i++) {
+        const segName = `seg${String(i).padStart(3, '0')}.ts`;
+        lines.push('#EXTINF:2.0,', segName);
+        if (i !== 10 && i !== 20) {
+          fs.copyFileSync(segSource, path.join(fixture50, segName));
+        }
+      }
+      lines.push('#EXT-X-ENDLIST', '');
+      fs.writeFileSync(path.join(fixture50, 'index.m3u8'), lines.join('\n'));
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-tol-fail',
+          title: 'Tolerance Fail Test',
+          fileName: 'tol_fail',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/stream50-fail/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 4,
+            maxRetries: 0,
+            retryBaseMs: 10,
+            segmentToleranceRate: 0.02,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('failed');
+      expect(job.info.errorCode).toBe('SEGMENT_MISSING');
+      expect(job.info.error).toContain('Missing segments exceed tolerance (2%)');
+    } finally {
+      fs.rmSync(fixture50, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with SEGMENT_MISSING when initialization segment is missing even under high tolerance', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-init-missing-'));
+    try {
+      server.rules.push({
+        match: /init-stream0\.m4s/,
+        status: 404,
+      });
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-init-missing',
+          title: 'Init Missing Test',
+          fileName: 'init_missing',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'dash', url: `${server.url}/dash/manifest.mpd` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 2,
+            maxRetries: 0,
+            retryBaseMs: 10,
+            segmentToleranceRate: 0.5,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('failed');
+      expect(job.info.errorCode).toBe('SEGMENT_MISSING');
+      expect(job.info.error).toContain('Initialization segment is missing');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

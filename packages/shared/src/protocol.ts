@@ -3,6 +3,7 @@ import type {
   Container,
   DownloadOptions,
   DualStreamLayout,
+  LiveMode,
   NativeDownloadRequest,
   NativeSubtitle,
   NativeTrack,
@@ -17,7 +18,11 @@ export const PROTOCOL_VERSION = 1;
 export type HostRequest =
   | { type: 'hello'; id: string }
   | { type: 'download.start'; id: string; request: NativeDownloadRequest }
-  | { type: 'download.pause' | 'download.resume' | 'download.cancel' | 'download.remove'; id: string; taskId: string }
+  | {
+      type: 'download.pause' | 'download.resume' | 'download.cancel' | 'download.remove' | 'download.stop';
+      id: string;
+      taskId: string;
+    }
   | { type: 'file.open' | 'file.reveal'; id: string; path: string }
   | { type: 'config'; id: string; maxSimultaneous: number }
   | { type: 'diagnostics'; id: string }
@@ -127,10 +132,34 @@ export function validateDownloadRequest(input: unknown): NativeDownloadRequest {
   const subtitleMode = (r.subtitleMode ?? 'none') as NativeDownloadRequest['subtitleMode'];
   if (!['none', 'separate', 'embed'].includes(subtitleMode)) fail('subtitleMode unsupported');
   const o = (r.options ?? {}) as Record<string, unknown>;
+  let segmentToleranceRate = 0.02;
+  if (o.segmentToleranceRate !== undefined) {
+    if (
+      typeof o.segmentToleranceRate !== 'number' ||
+      !Number.isFinite(o.segmentToleranceRate) ||
+      o.segmentToleranceRate < 0 ||
+      o.segmentToleranceRate > 1
+    ) {
+      fail('segmentToleranceRate must be a number between 0 and 1');
+    }
+    segmentToleranceRate = o.segmentToleranceRate;
+  }
+  let liveMode: LiveMode | undefined;
+  if (o.liveMode !== undefined) {
+    if (!['dvr', 'duration', 'until_stopped'].includes(String(o.liveMode))) fail('invalid liveMode');
+    liveMode = o.liveMode as LiveMode;
+  }
+  let liveDurationSeconds: number | undefined;
+  if (o.liveDurationSeconds !== undefined) {
+    liveDurationSeconds = int(o.liveDurationSeconds, 'liveDurationSeconds', 1, 86400 * 7);
+  }
   const options: DownloadOptions = {
     segmentConcurrency: int(o.segmentConcurrency ?? 6, 'segmentConcurrency', 1, 32),
     maxRetries: int(o.maxRetries ?? 5, 'maxRetries', 0, 20),
     retryBaseMs: int(o.retryBaseMs ?? 1000, 'retryBaseMs', 0, 60_000),
+    segmentToleranceRate,
+    liveMode,
+    liveDurationSeconds,
   };
   let expectedDurationSec: number | undefined;
   if (r.expectedDurationSec !== undefined) {

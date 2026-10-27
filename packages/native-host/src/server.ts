@@ -116,6 +116,9 @@ export class HostServer {
         case 'download.cancel':
           this.reply(id, this.manager.cancel(this.taskId(m)));
           break;
+        case 'download.stop':
+          this.reply(id, this.manager.stop(this.taskId(m)));
+          break;
         case 'download.remove':
           this.manager.remove(this.taskId(m));
           this.reply(id);

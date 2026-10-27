@@ -32,7 +32,7 @@ export interface FetchTarget {
   range?: RangeSpec;
 }
 
-const sleep = (ms: number, signal: AbortSignal) =>
+export const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
     if (signal.aborted) return reject(new AbortedError(String(signal.reason ?? 'aborted')));
     const t = setTimeout(() => {
@@ -207,6 +207,10 @@ export class HttpClient {
           // Range not satisfiable: partial file is complete or stale; restart from scratch.
           fs.rmSync(part, { force: true });
           throw new HttpError('Resume rejected; restarting', 416, 'HTTP_416', true, 0);
+        }
+        if (res.status === 404) {
+          const retryAfter = parseRetryAfter(res.headers.get('retry-after'));
+          throw new HttpError('Download failed: HTTP 404', 404, 'HTTP_404', true, retryAfter);
         }
         throw this.statusError(res, 'Download failed');
       }

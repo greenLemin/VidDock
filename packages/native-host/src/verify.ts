@@ -7,6 +7,7 @@ export interface VerifyExpectations {
   video: boolean;
   audio: boolean;
   durationSec?: number;
+  skippedSegments?: number;
 }
 
 export function mediaDuration(p: ProbeResult): number | undefined {
@@ -33,7 +34,15 @@ export function analyzeProbe(p: ProbeResult, expect: VerifyExpectations): { erro
   else if (expect.durationSec && expect.durationSec > 0) {
     const diff = Math.abs(dur - expect.durationSec);
     if (diff > durationTolerance(expect.durationSec)) {
-      errors.push(`Duration mismatch: expected about ${expect.durationSec.toFixed(1)}s but file is ${dur.toFixed(1)}s`);
+      if (expect.skippedSegments && expect.skippedSegments > 0) {
+        warnings.push(
+          `Duration mismatch: expected about ${expect.durationSec.toFixed(1)}s but file is ${dur.toFixed(1)}s (${expect.skippedSegments} skipped segment(s))`,
+        );
+      } else {
+        errors.push(
+          `Duration mismatch: expected about ${expect.durationSec.toFixed(1)}s but file is ${dur.toFixed(1)}s`,
+        );
+      }
     }
   }
   const v0 = videos[0];

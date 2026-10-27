@@ -1,5 +1,5 @@
 /** Turn parsed manifests into the quality/audio/subtitle model shown in the UI. */
-import { parseMpd } from './dash.ts';
+import { areCodecsCompatible, parseMpd } from './dash.ts';
 import { parseHls } from './hls.ts';
 import { dedupeQualities, qualityLabel, sortQualities } from './quality.ts';
 import type { AudioTrack, Quality, SubtitleTrack } from './types.ts';
@@ -11,6 +11,7 @@ export interface DescribedMedia {
   durationSec?: number;
   hasVideo: boolean;
   hasAudio: boolean;
+  isLive?: boolean;
   unsupportedReason?: string;
 }
 
@@ -35,7 +36,6 @@ export function describeHls(text: string, url: string): DescribedMedia {
     const first = pl.segments[0]?.url ?? '';
     const audioOnly = /\.(aac|mp3|m4a)(\?|$)/i.test(first);
     let unsupportedReason: string | undefined = pl.drm;
-    if (!unsupportedReason && pl.isLive) unsupportedReason = 'Live streams are not supported (no end of stream)';
     if (!unsupportedReason && pl.segments.length === 0) unsupportedReason = 'Playlist contains no segments';
     return {
       qualities: [{ id: 'q0', label: 'Original', ref: url }],
@@ -44,6 +44,7 @@ export function describeHls(text: string, url: string): DescribedMedia {
       durationSec: pl.totalDuration || undefined,
       hasVideo: !audioOnly,
       hasAudio: true,
+      isLive: pl.isLive,
       unsupportedReason,
     };
   }
@@ -97,9 +98,46 @@ export function describeDash(text: string, url: string): DescribedMedia {
   const mpd = parseMpd(text, url);
   const period = mpd.periods[0];
   let unsupportedReason: string | undefined = mpd.drm;
-  if (!unsupportedReason && mpd.isLive) unsupportedReason = 'Live streams are not supported (no end of stream)';
+
   if (!unsupportedReason && mpd.periods.length > 1) {
-    unsupportedReason = 'Multi-period manifests are not supported yet';
+    const p0Videos =
+      mpd.periods[0]?.adaptations.filter((a) => a.contentType === 'video').flatMap((a) => a.representations) ?? [];
+    const p0Audios =
+      mpd.periods[0]?.adaptations.filter((a) => a.contentType === 'audio').flatMap((a) => a.representations) ?? [];
+
+    for (let i = 1; i < mpd.periods.length; i++) {
+      const pi = mpd.periods[i]!;
+      const piVideos = pi.adaptations.filter((a) => a.contentType === 'video').flatMap((a) => a.representations);
+      const piAudios = pi.adaptations.filter((a) => a.contentType === 'audio').flatMap((a) => a.representations);
+
+      if (p0Videos.length > 0) {
+        if (piVideos.length === 0) {
+          unsupportedReason = `Multi-period manifest has missing video in period ${i + 1}`;
+          break;
+        }
+        const hasCompatibleVideo = p0Videos.some((v0) =>
+          piVideos.some((vi) => areCodecsCompatible(v0.codecs, vi.codecs)),
+        );
+        if (!hasCompatibleVideo) {
+          unsupportedReason = 'Multi-period manifest has incompatible video codecs across periods';
+          break;
+        }
+      }
+
+      if (p0Audios.length > 0) {
+        if (piAudios.length === 0) {
+          unsupportedReason = `Multi-period manifest has missing audio in period ${i + 1}`;
+          break;
+        }
+        const hasCompatibleAudio = p0Audios.some((a0) =>
+          piAudios.some((ai) => areCodecsCompatible(a0.codecs, ai.codecs)),
+        );
+        if (!hasCompatibleAudio) {
+          unsupportedReason = 'Multi-period manifest has incompatible audio codecs across periods';
+          break;
+        }
+      }
+    }
   }
   const videos = period?.adaptations.filter((a) => a.contentType === 'video') ?? [];
   const audios = period?.adaptations.filter((a) => a.contentType === 'audio') ?? [];
@@ -142,6 +180,7 @@ export function describeDash(text: string, url: string): DescribedMedia {
     durationSec: mpd.durationSec || undefined,
     hasVideo: qualities.length > 0,
     hasAudio: audios.length > 0 || videos.length > 0,
+    isLive: mpd.isLive,
     unsupportedReason,
   };
 }

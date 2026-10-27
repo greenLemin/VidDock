@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { findBinary, probe, runFfmpeg } from '../../packages/native-host/src/ffmpeg.ts';
+import { DownloadJob } from '../../packages/native-host/src/job.ts';
 import { buildMuxArgs, chooseContainer, type MuxInput } from '../../packages/native-host/src/mux.ts';
 import { analyzeProbe } from '../../packages/native-host/src/verify.ts';
+import { ensureFixtures } from '../helpers/fixtures.ts';
+import { TestServer } from '../helpers/server.ts';
 
 const execFileP = promisify(execFile);
 
@@ -589,5 +592,432 @@ describe('Challenger M1 I2: Empirical Stress Harness', () => {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recording', () => {
+  const ffmpeg = findBinary('ffmpeg');
+  const ffprobe = findBinary('ffprobe');
+  let fixtureDir: string;
+  let server: TestServer;
+
+  beforeAll(async () => {
+    process.env.VIDDOCK_ALLOWED_ROOT = os.tmpdir();
+    fixtureDir = await ensureFixtures();
+    server = new TestServer(fixtureDir);
+    await server.start();
+  });
+
+  afterAll(async () => {
+    await server.stop();
+  });
+
+  beforeEach(() => {
+    server.reset();
+  });
+
+  it('downloads, assembles and remuxes multi-period DASH manifest with duration ~6.0s', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-dash-multi-'));
+    try {
+      const job = new DownloadJob(
+        {
+          taskId: 'task-dash-multi',
+          title: 'DASH Multi-Period Test',
+          fileName: 'dash_multi',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'dash', url: `${server.url}/dash/manifest-multi.mpd` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 2,
+            maxRetries: 1,
+            retryBaseMs: 10,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+      expect(pr.streams.some((s) => s.codec_type === 'audio')).toBe(true);
+      const dur = Number(pr.format.duration);
+      expect(dur).toBeGreaterThanOrEqual(5.8);
+      expect(dur).toBeLessThanOrEqual(6.2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures rolling DVR window live stream without #EXT-X-ENDLIST until stream ends', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-dvr-'));
+    const liveDir = path.join(fixtureDir, 'live-dvr');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg0.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg1.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg2.ts'));
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      fs.writeFileSync(
+        playlistPath,
+        [
+          '#EXTM3U',
+          '#EXT-X-VERSION:3',
+          '#EXT-X-TARGETDURATION:0.2',
+          '#EXT-X-MEDIA-SEQUENCE:0',
+          '#EXTINF:0.2,',
+          'seg0.ts',
+          '#EXTINF:0.2,',
+          'seg1.ts',
+        ].join('\n') + '\n',
+      );
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-dvr',
+          title: 'Live DVR Test',
+          fileName: 'live_dvr',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-dvr/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 2,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'dvr',
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      const runPromise = job.run();
+
+      timer = setTimeout(() => {
+        try {
+          fs.writeFileSync(
+            playlistPath,
+            [
+              '#EXTM3U',
+              '#EXT-X-VERSION:3',
+              '#EXT-X-TARGETDURATION:0.2',
+              '#EXT-X-MEDIA-SEQUENCE:0',
+              '#EXTINF:0.2,',
+              'seg0.ts',
+              '#EXTINF:0.2,',
+              'seg1.ts',
+              '#EXTINF:0.2,',
+              'seg2.ts',
+              '#EXT-X-ENDLIST',
+            ].join('\n') + '\n',
+          );
+        } catch {
+          // ignore if cleaned up
+        }
+      }, 50);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures fixed duration from sliding live HLS window (liveMode: "duration")', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-dur-'));
+    const liveDir = path.join(fixtureDir, 'live-dur');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg0.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg1.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg2.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg3.ts'));
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      fs.writeFileSync(
+        playlistPath,
+        [
+          '#EXTM3U',
+          '#EXT-X-VERSION:3',
+          '#EXT-X-TARGETDURATION:0.2',
+          '#EXT-X-MEDIA-SEQUENCE:0',
+          '#EXTINF:1.0,',
+          'seg0.ts',
+          '#EXTINF:1.0,',
+          'seg1.ts',
+        ].join('\n') + '\n',
+      );
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-dur',
+          title: 'Live Duration Test',
+          fileName: 'live_dur',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-dur/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 2,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'duration',
+            liveDurationSeconds: 2,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves partial capture when stopped via job.stop() (liveMode: "until_stopped")', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-stop-'));
+    const liveDir = path.join(fixtureDir, 'live-stop');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg0.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg1.ts'));
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      fs.writeFileSync(
+        playlistPath,
+        [
+          '#EXTM3U',
+          '#EXT-X-VERSION:3',
+          '#EXT-X-TARGETDURATION:0.2',
+          '#EXT-X-MEDIA-SEQUENCE:0',
+          '#EXTINF:1.0,',
+          'seg0.ts',
+          '#EXTINF:1.0,',
+          'seg1.ts',
+        ].join('\n') + '\n',
+      );
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-stop',
+          title: 'Live Stop Test',
+          fileName: 'live_stop',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-stop/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 1,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'until_stopped',
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      const runPromise = job.run();
+      timer = setTimeout(() => {
+        job.stop();
+      }, 100);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+      expect(job.info.warnings?.some((w) => w.includes('Recording stopped; partial capture preserved'))).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves partial capture on cancellation (job.abort("cancel")) per Mandatory Decision 3', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-cancel-'));
+    const liveDir = path.join(fixtureDir, 'live-cancel');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg0.ts'));
+      fs.copyFileSync(segSource, path.join(liveDir, 'seg1.ts'));
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      fs.writeFileSync(
+        playlistPath,
+        [
+          '#EXTM3U',
+          '#EXT-X-VERSION:3',
+          '#EXT-X-TARGETDURATION:0.2',
+          '#EXT-X-MEDIA-SEQUENCE:0',
+          '#EXTINF:1.0,',
+          'seg0.ts',
+          '#EXTINF:1.0,',
+          'seg1.ts',
+        ].join('\n') + '\n',
+      );
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-cancel',
+          title: 'Live Cancel Test',
+          fileName: 'live_cancel',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-cancel/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 1,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'until_stopped',
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      const runPromise = job.run();
+      timer = setTimeout(() => {
+        job.abort('cancel');
+      }, 100);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+      expect(job.info.warnings?.some((w) => w.includes('Recording stopped; partial capture preserved'))).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures dynamic MPEG-DASH manifest without throwing', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-dash-live-'));
+    const dashLiveDir = path.join(fixtureDir, 'dash-live');
+    fs.mkdirSync(dashLiveDir, { recursive: true });
+
+    try {
+      const dynamicMpd = `<?xml version="1.0" encoding="utf-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"
+	profiles="urn:mpeg:dash:profile:isoff-live:2011"
+	type="dynamic"
+	availabilityStartTime="2020-01-01T00:00:00Z"
+	minBufferTime="PT2.0S">
+	<Period id="0" start="PT0.0S">
+		<AdaptationSet id="0" contentType="video" segmentAlignment="true">
+			<Representation id="0" mimeType="video/mp4" codecs="avc1.42c00d" bandwidth="164938" width="320" height="240">
+				<SegmentTemplate timescale="12800" initialization="../dash/init-stream0.m4s" media="../dash/chunk-stream0-$Number%05d$.m4s" startNumber="1">
+					<SegmentTimeline>
+						<S t="0" d="25600" r="1" />
+					</SegmentTimeline>
+				</SegmentTemplate>
+			</Representation>
+		</AdaptationSet>
+	</Period>
+</MPD>
+`;
+      fs.writeFileSync(path.join(dashLiveDir, 'manifest-dynamic.mpd'), dynamicMpd);
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-dash-dynamic',
+          title: 'DASH Dynamic Test',
+          fileName: 'dash_dynamic',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'dash', url: `${server.url}/dash-live/manifest-dynamic.mpd` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 2,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'duration',
+            liveDurationSeconds: 4,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      await job.run();
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      fs.rmSync(dashLiveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

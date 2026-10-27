@@ -113,12 +113,15 @@ export interface MediaItem {
   trackLabel?: string;
   hasVideo: boolean;
   hasAudio: boolean;
+  isLive?: boolean;
   /** Set when VidDock cannot download this stream (DRM, live, ...). */
   unsupportedReason?: string;
   detectedAt: number;
   /** Suggested or active dual-stream layout for multi-track presentations. */
   layout?: DualStreamLayout;
 }
+
+export type LiveMode = 'dvr' | 'duration' | 'until_stopped';
 
 export type TaskState =
   'queued' | 'preparing' | 'downloading' | 'processing' | 'verifying' | 'completed' | 'paused' | 'failed' | 'cancelled';
@@ -146,6 +149,8 @@ export interface TaskInfo {
   error?: string;
   errorCode?: string;
   warnings?: string[];
+  isLive?: boolean;
+  liveMode?: LiveMode;
   createdAt: number;
   updatedAt: number;
 }
@@ -175,6 +180,9 @@ export interface DownloadOptions {
   segmentConcurrency: number;
   maxRetries: number;
   retryBaseMs: number;
+  segmentToleranceRate?: number;
+  liveMode?: LiveMode;
+  liveDurationSeconds?: number;
 }
 
 export type NativeTrack =
@@ -239,6 +247,7 @@ export interface Settings {
   minDirectBytes: number;
   /** User's dual-stream layout preference for multi-feed presentations. */
   dualStreamLayout: DualStreamLayout;
+  segmentToleranceRate?: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -256,4 +265,5 @@ export const DEFAULT_SETTINGS: Settings = {
   directViaChrome: true,
   minDirectBytes: 262144,
   dualStreamLayout: 'side-by-side',
+  segmentToleranceRate: 0.02,
 };

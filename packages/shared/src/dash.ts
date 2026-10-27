@@ -60,6 +60,20 @@ export function parseIsoDuration(value: string | undefined): number {
   return n(3) * 86400 + n(4) * 3600 + n(5) * 60 + n(6);
 }
 
+export function baseCodec(codec?: string): string {
+  if (!codec) return '';
+  return codec.split('.')[0]!.trim().toLowerCase();
+}
+
+export function areCodecsCompatible(c1?: string, c2?: string): boolean {
+  if (!c1 || !c2) return true;
+  const b1 = baseCodec(c1);
+  const b2 = baseCodec(c2);
+  if (b1 === b2) return true;
+  if ((b1 === 'hvc1' || b1 === 'hev1') && (b2 === 'hvc1' || b2 === 'hev1')) return true;
+  return false;
+}
+
 function arr<T = Node>(v: T | T[] | undefined): T[] {
   if (v === undefined || v === null) return [];
   return Array.isArray(v) ? v : [v];
@@ -223,8 +237,21 @@ export function parseMpd(xml: string, mpdUrl: string): DashManifest {
   const periods: DashManifest['periods'] = [];
 
   const periodNodes = arr(mpd.Period);
-  periodNodes.forEach((period: Node) => {
-    const periodDuration = parseIsoDuration(period['@_duration']) || (periodNodes.length === 1 ? mpdDuration : 0);
+  periodNodes.forEach((period: Node, i: number) => {
+    let periodDuration = parseIsoDuration(period['@_duration']);
+    if (!periodDuration) {
+      const periodStart = parseIsoDuration(period['@_start']);
+      const nextPeriodStart = i + 1 < periodNodes.length ? parseIsoDuration(periodNodes[i + 1]['@_start']) : 0;
+      if (nextPeriodStart > periodStart) {
+        periodDuration = nextPeriodStart - periodStart;
+      } else if (mpdDuration && periodStart < mpdDuration) {
+        periodDuration = mpdDuration - periodStart;
+      } else if (periodNodes.length === 1) {
+        periodDuration = mpdDuration;
+      } else {
+        periodDuration = 0;
+      }
+    }
     const periodBase = baseOf(period, mpdBase);
     const adaptations: DashAdaptation[] = [];
     for (const set of arr(period.AdaptationSet)) {
@@ -260,6 +287,12 @@ export function parseMpd(xml: string, mpdUrl: string): DashManifest {
   });
 
   const durationSec =
-    mpdDuration || (periods[0]?.adaptations[0]?.representations[0]?.segments.reduce((s, x) => s + x.duration, 0) ?? 0);
+    mpdDuration ||
+    periods.reduce((total, p) => {
+      const rep =
+        p.adaptations.find((a) => a.contentType === 'video' || a.contentType === 'audio')?.representations[0] ??
+        p.adaptations[0]?.representations[0];
+      return total + (rep?.segments.reduce((s, x) => s + x.duration, 0) ?? 0);
+    }, 0);
   return { isLive, durationSec, periods, drm };
 }

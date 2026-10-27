@@ -88,4 +88,70 @@ describe('validateDownloadRequest', () => {
     expect(validated.subtitles).toHaveLength(1);
     expect(validated.subtitles[0]?.language).toBe('en');
   });
+
+  describe('segmentToleranceRate and live options validation', () => {
+    it('accepts valid segmentToleranceRate numbers', () => {
+      const v1 = validateDownloadRequest({
+        ...baseRequest,
+        options: { ...baseRequest.options, segmentToleranceRate: 0.05 },
+      });
+      expect(v1.options.segmentToleranceRate).toBe(0.05);
+
+      const v2 = validateDownloadRequest({
+        ...baseRequest,
+        options: { ...baseRequest.options, segmentToleranceRate: 0 },
+      });
+      expect(v2.options.segmentToleranceRate).toBe(0);
+
+      const v3 = validateDownloadRequest({
+        ...baseRequest,
+        options: { ...baseRequest.options, segmentToleranceRate: 1 },
+      });
+      expect(v3.options.segmentToleranceRate).toBe(1);
+    });
+
+    it('defaults segmentToleranceRate to 0.02 when omitted', () => {
+      const validated = validateDownloadRequest(baseRequest);
+      expect(validated.options.segmentToleranceRate).toBe(0.02);
+    });
+
+    it('rejects invalid segmentToleranceRate values', () => {
+      expect(() =>
+        validateDownloadRequest({
+          ...baseRequest,
+          options: { ...baseRequest.options, segmentToleranceRate: -0.01 },
+        }),
+      ).toThrow('Invalid request: segmentToleranceRate must be a number between 0 and 1');
+
+      expect(() =>
+        validateDownloadRequest({
+          ...baseRequest,
+          options: { ...baseRequest.options, segmentToleranceRate: 1.5 },
+        }),
+      ).toThrow('Invalid request: segmentToleranceRate must be a number between 0 and 1');
+
+      expect(() =>
+        validateDownloadRequest({
+          ...baseRequest,
+          options: { ...baseRequest.options, segmentToleranceRate: 'fast' as unknown as number },
+        }),
+      ).toThrow('Invalid request: segmentToleranceRate must be a number between 0 and 1');
+    });
+
+    it('validates liveMode and liveDurationSeconds', () => {
+      const v = validateDownloadRequest({
+        ...baseRequest,
+        options: { ...baseRequest.options, liveMode: 'duration', liveDurationSeconds: 60 },
+      });
+      expect(v.options.liveMode).toBe('duration');
+      expect(v.options.liveDurationSeconds).toBe(60);
+
+      expect(() =>
+        validateDownloadRequest({
+          ...baseRequest,
+          options: { ...baseRequest.options, liveMode: 'invalid' as unknown as 'dvr' },
+        }),
+      ).toThrow('Invalid request: invalid liveMode');
+    });
+  });
 });
