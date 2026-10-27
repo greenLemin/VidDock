@@ -24,7 +24,7 @@ Usage:
 Options:
   --extension-id <ID>  Chrome extension ID (32 lowercase letters a-p)
   --launcher <PATH>    Path to viddock-host-launcher.sh
-  --all-browsers       Register for Chrome, Canary, Chromium, Brave, and Edge
+  --all-browsers       Register for Chrome, Canary, Chromium, Brave, Edge, Vivaldi, and Arc
   --dry-run            Simulate installation without writing any files
   --force              Overwrite existing manifest files silently
   -h, --help           Show this help message
@@ -144,7 +144,6 @@ if [ "$DRY_RUN" = false ]; then
 fi
 
 # 2. Resolve Extension ID
-FALLBACK_ID="pknljchblnkgfmfcfdfkddedjofmjbkj"
 DETECTED_ID=""
 
 if [ "$EXTENSION_ID_SPECIFIED" = true ]; then
@@ -155,20 +154,45 @@ if [ "$EXTENSION_ID_SPECIFIED" = true ]; then
   TARGET_EXTENSION_ID="$EXTENSION_ID"
   echo "[2/4] Using specified Extension ID: $TARGET_EXTENSION_ID"
 else
-  # Attempt auto-detection from Chrome Preferences
-  CHROME_PREF_DIR="$HOME/Library/Application Support/Google/Chrome"
-  if [ -d "$CHROME_PREF_DIR" ]; then
-    DETECTED_ID=$(grep -Eroh '"[a-p]{32}":\{"manifest":\{[^}]*"name":"VidDock"' "$CHROME_PREF_DIR" 2>/dev/null | grep -Eo '[a-p]{32}' | head -n 1 || true)
-  fi
+  # Attempt auto-detection from all supported Chromium browser preference files
+  PREF_DIRS=(
+    "$HOME/Library/Application Support/Google/Chrome"
+    "$HOME/Library/Application Support/Google/Chrome Canary"
+    "$HOME/Library/Application Support/Chromium"
+    "$HOME/Library/Application Support/BraveSoftware/Brave-Browser"
+    "$HOME/Library/Application Support/Microsoft Edge"
+    "$HOME/Library/Application Support/Vivaldi"
+    "$HOME/Library/Application Support/Arc/User Data"
+  )
+  for pdir in "${PREF_DIRS[@]}"; do
+    if [ -d "$pdir" ]; then
+      DETECTED_ID=$(find "$pdir" -maxdepth 3 \( -name "Preferences" -o -name "Secure Preferences" \) -type f 2>/dev/null | xargs grep -Eroh '"[a-p]{32}":\{[^}]*"name":\s*"VidDock"' 2>/dev/null | grep -Eo '[a-p]{32}' | head -n 1 || true)
+      if [ -n "$DETECTED_ID" ] && [[ "$DETECTED_ID" =~ ^[a-p]{32}$ ]]; then
+        break
+      else
+        DETECTED_ID=""
+      fi
+    fi
+  done
 
   if [ -n "$DETECTED_ID" ] && [[ "$DETECTED_ID" =~ ^[a-p]{32}$ ]]; then
     TARGET_EXTENSION_ID="$DETECTED_ID"
     echo "[2/4] Auto-detected installed VidDock Extension ID: $TARGET_EXTENSION_ID"
+  elif [ -t 0 ]; then
+    echo "[2/4] No Extension ID provided or auto-detected in browser profiles."
+    read -r -p "      Enter your 32-character Chrome Extension ID: " TARGET_EXTENSION_ID
+    if [[ ! "$TARGET_EXTENSION_ID" =~ ^[a-p]{32}$ ]]; then
+      echo "Error: Invalid Extension ID format. Must be exactly 32 lowercase letters matching [a-p]." >&2
+      exit 1
+    fi
+  elif [ "$DRY_RUN" = true ]; then
+    TARGET_EXTENSION_ID="pknljchblnkgfmfcfdfkddedjofmjbkj"
+    echo "[2/4] [DRY-RUN] No Extension ID provided or auto-detected. Using simulation ID: $TARGET_EXTENSION_ID"
   else
-    TARGET_EXTENSION_ID="$FALLBACK_ID"
-    echo "[2/4] No Extension ID provided or auto-detected."
-    echo "      Using development fallback ID: $TARGET_EXTENSION_ID"
-    echo "      (You can update this anytime with: ./scripts/install-macos.sh <YOUR_EXTENSION_ID>)"
+    echo "Error: Extension ID was not provided and could not be auto-detected." >&2
+    echo "Please provide your 32-character Extension ID as an argument:" >&2
+    echo "  ./scripts/install-macos.sh <EXTENSION_ID>" >&2
+    exit 1
   fi
 fi
 
@@ -176,6 +200,7 @@ fi
 echo "[3/4] Verifying system runtime and dependencies..."
 
 EXTRA_SEARCH_PATHS=(
+  "$HOME/Library/Application Support/VidDock/bin"
   "/opt/homebrew/bin"
   "/opt/homebrew/sbin"
   "/usr/local/bin"
@@ -199,7 +224,12 @@ for p in "${EXTRA_SEARCH_PATHS[@]}"; do
   fi
 done
 
-NODE_BIN=$(PATH="$SEARCH_PATH" which node 2>/dev/null || true)
+if [ "${VIDDOCK_MOCK_NO_NODE:-0}" = "1" ]; then
+  NODE_BIN=""
+else
+  NODE_BIN=$(PATH="$SEARCH_PATH" which node 2>/dev/null || true)
+fi
+
 if [ -n "$NODE_BIN" ]; then
   NODE_VER=$("$NODE_BIN" -v 2>/dev/null || echo "unknown")
   NODE_MAJOR=$(echo "$NODE_VER" | sed -E 's/^v([0-9]+).*/\1/')
@@ -210,14 +240,46 @@ if [ -n "$NODE_BIN" ]; then
   fi
 else
   echo "      [✗] Error: Node.js (>=20) runtime not found. Install via: brew install node" >&2
+  exit 1
 fi
 
 FFMPEG_BIN=$(PATH="$SEARCH_PATH" which ffmpeg 2>/dev/null || true)
 if [ -n "$FFMPEG_BIN" ]; then
   FFMPEG_VER=$("$FFMPEG_BIN" -version 2>/dev/null | head -n 1 || echo "unknown")
   echo "      [✓] FFmpeg:  $FFMPEG_BIN ($FFMPEG_VER)"
+  if [ "$DRY_RUN" = true ]; then
+    echo "      [DRY-RUN] FFmpeg status: detected ($FFMPEG_BIN)"
+  fi
 else
-  echo "      [!] Note: FFmpeg not detected. Stream remuxing requires FFmpeg: brew install ffmpeg"
+  echo "      [!] Note: FFmpeg not detected."
+  if [ "$DRY_RUN" = true ]; then
+    echo "      [DRY-RUN] FFmpeg status: missing (would auto-install via Homebrew or static build)"
+  else
+    if command -v brew >/dev/null 2>&1; then
+      echo "      [>] Auto-installing FFmpeg via Homebrew..."
+      brew install ffmpeg || true
+      FFMPEG_BIN=$(PATH="$SEARCH_PATH" which ffmpeg 2>/dev/null || true)
+    fi
+    if [ -z "$FFMPEG_BIN" ]; then
+      APP_SUPPORT_BIN="$HOME/Library/Application Support/VidDock/bin"
+      mkdir -p "$APP_SUPPORT_BIN"
+      echo "      [>] Installing static FFmpeg to $APP_SUPPORT_BIN..."
+      TMP_DL="$(mktemp -d /tmp/viddock-ffmpeg.XXXXXX 2>/dev/null || mktemp -d)"
+      if curl -fsSL -m 30 "https://evermeet.cx/ffmpeg/getrelease/zip" -o "$TMP_DL/ffmpeg.zip" 2>/dev/null; then
+        unzip -q -o "$TMP_DL/ffmpeg.zip" -d "$TMP_DL" 2>/dev/null || true
+        if [ -f "$TMP_DL/ffmpeg" ]; then
+          mv -f "$TMP_DL/ffmpeg" "$APP_SUPPORT_BIN/ffmpeg"
+          chmod +x "$APP_SUPPORT_BIN/ffmpeg"
+          echo "      [✓] Static FFmpeg installed to $APP_SUPPORT_BIN/ffmpeg"
+          FFMPEG_BIN="$APP_SUPPORT_BIN/ffmpeg"
+        fi
+      fi
+      rm -rf "$TMP_DL"
+      if [ -z "$FFMPEG_BIN" ]; then
+        echo "      [!] Note: Could not auto-install FFmpeg. Stream remuxing requires FFmpeg: brew install ffmpeg"
+      fi
+    fi
+  fi
 fi
 
 FFPROBE_BIN=$(PATH="$SEARCH_PATH" which ffprobe 2>/dev/null || true)
@@ -257,27 +319,33 @@ echo "[4/4] Registering Native Messaging Host manifests..."
 
 TARGET_DIRS=()
 
-# Google Chrome (always included)
-TARGET_DIRS+=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts")
+check_and_add_browser() {
+  local name="$1"
+  local app_dir="$2"
+  local bundle="$3"
+  local nm_dir="$4"
+  if [ -d "$app_dir" ] || [ -d "$bundle" ] || [ "$ALL_BROWSERS" = true ]; then
+    TARGET_DIRS+=("$nm_dir")
+    if [ "$DRY_RUN" = true ]; then
+      echo "      [✓] Detected browser: $name"
+    fi
+  fi
+}
 
-# Google Chrome Canary
-if [ -d "$HOME/Library/Application Support/Google/Chrome Canary" ] || [ "$ALL_BROWSERS" = true ]; then
-  TARGET_DIRS+=("$HOME/Library/Application Support/Google/Chrome Canary/NativeMessagingHosts")
-fi
+check_and_add_browser "Google Chrome" "$HOME/Library/Application Support/Google/Chrome" "/Applications/Google Chrome.app" "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
+check_and_add_browser "Google Chrome Canary" "$HOME/Library/Application Support/Google/Chrome Canary" "/Applications/Google Chrome Canary.app" "$HOME/Library/Application Support/Google/Chrome Canary/NativeMessagingHosts"
+check_and_add_browser "Chromium" "$HOME/Library/Application Support/Chromium" "/Applications/Chromium.app" "$HOME/Library/Application Support/Chromium/NativeMessagingHosts"
+check_and_add_browser "Brave Browser" "$HOME/Library/Application Support/BraveSoftware/Brave-Browser" "/Applications/Brave Browser.app" "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
+check_and_add_browser "Microsoft Edge" "$HOME/Library/Application Support/Microsoft Edge" "/Applications/Microsoft Edge.app" "$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts"
+check_and_add_browser "Vivaldi" "$HOME/Library/Application Support/Vivaldi" "/Applications/Vivaldi.app" "$HOME/Library/Application Support/Vivaldi/NativeMessagingHosts"
+check_and_add_browser "Arc" "$HOME/Library/Application Support/Arc" "/Applications/Arc.app" "$HOME/Library/Application Support/Arc/User Data/NativeMessagingHosts"
 
-# Chromium
-if [ -d "$HOME/Library/Application Support/Chromium" ] || [ "$ALL_BROWSERS" = true ]; then
-  TARGET_DIRS+=("$HOME/Library/Application Support/Chromium/NativeMessagingHosts")
-fi
-
-# Brave Browser
-if [ -d "$HOME/Library/Application Support/BraveSoftware/Brave-Browser" ] || [ "$ALL_BROWSERS" = true ]; then
-  TARGET_DIRS+=("$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts")
-fi
-
-# Microsoft Edge
-if [ -d "$HOME/Library/Application Support/Microsoft Edge" ] || [ "$ALL_BROWSERS" = true ]; then
-  TARGET_DIRS+=("$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts")
+if [ ${#TARGET_DIRS[@]} -eq 0 ]; then
+  # Fallback to Chrome directory if no browser profile was detected
+  TARGET_DIRS+=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts")
+  if [ "$DRY_RUN" = true ]; then
+    echo "      [✓] Detected browser: Google Chrome (default)"
+  fi
 fi
 
 # Verify target extension ID before manifest construction

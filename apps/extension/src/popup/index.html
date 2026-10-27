@@ -55,6 +55,11 @@
 
       <!-- Main Content -->
       <main class="popup-main">
+        <div id="ffmpeg-warning-banner" class="banner banner-warning hidden" role="alert">
+          <span class="banner-text">⚠️ FFmpeg not found. HLS/DASH/Mediasite streams require FFmpeg.</span>
+          <a href="#" id="link-setup-ffmpeg" class="banner-link">Setup</a>
+        </div>
+
         <div class="section-header">
           <h2 class="section-title">Detected on this page <span id="media-count" class="badge-count">0</span></h2>
           <button id="btn-refresh-media" class="btn-text-action" title="Rescan page">

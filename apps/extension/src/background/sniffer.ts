@@ -19,7 +19,8 @@ import { mediaStore } from './media_store.ts';
 import { taskCoordinator } from './task_coordinator.ts';
 
 // Ignore media segments, chunks, icons, telemetry
-export const CHUNK_OR_IGNORABLE = /\.(ts|m4s|m4i|vtt|srt|key|aac|png|jpg|jpeg|gif|svg|ico|css|js|woff|woff2)(\?|#|$)/i;
+export const CHUNK_OR_IGNORABLE = /\.(ts|m4s|m4i|vtt|srt|key|png|jpg|jpeg|gif|svg|ico|css|js|woff|woff2)(\?|#|$)/i;
+export const IS_AAC_SEGMENT = /[/_-](?:seg|segment|chunk|frag|part)[-_0-9]+.*\.aac(\?|#|$)/i;
 export const IS_HLS = /\.m3u8(\?|#|$)/i;
 export const IS_DASH = /\.mpd(\?|#|$)/i;
 export const IS_SMOOTH = /\.ism\/manifest/i;
@@ -48,7 +49,7 @@ export class MediaSniffer {
     if (details.tabId <= 0 || !details.url) return;
     const url = details.url;
 
-    if (CHUNK_OR_IGNORABLE.test(url)) return;
+    if (CHUNK_OR_IGNORABLE.test(url) || IS_AAC_SEGMENT.test(url)) return;
 
     if (IS_HLS.test(url) || IS_DASH.test(url) || IS_SMOOTH.test(url) || IS_DIRECT.test(url)) {
       this.processMediaUrl(details.tabId, url);
@@ -60,7 +61,7 @@ export class MediaSniffer {
   onHeadersReceived = (details: chrome.webRequest.WebResponseHeadersDetails): void => {
     if (details.tabId <= 0 || !details.url || !details.responseHeaders) return;
     const url = details.url;
-    if (CHUNK_OR_IGNORABLE.test(url)) return;
+    if (CHUNK_OR_IGNORABLE.test(url) || IS_AAC_SEGMENT.test(url)) return;
 
     let mimeType = '';
     let contentLength = 0;
@@ -214,7 +215,7 @@ export class MediaSniffer {
     const pageTitle = report.ogTitle || report.pageTitle || 'Web Video';
 
     for (const media of report.media) {
-      if (CHUNK_OR_IGNORABLE.test(media.url)) continue;
+      if (CHUNK_OR_IGNORABLE.test(media.url) || IS_AAC_SEGMENT.test(media.url)) continue;
 
       let kind: MediaKind = 'direct';
       if (IS_HLS.test(media.url)) kind = 'hls';

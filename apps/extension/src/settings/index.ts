@@ -12,13 +12,14 @@ function initColorTheme(): void {
 }
 initColorTheme();
 
-class SettingsController {
+export class SettingsController {
   private settings: Settings = { ...DEFAULT_SETTINGS };
   private nativeStatus: NativeStatus = { connected: false };
   private selectedMediasiteLayout: DualStreamLayout = 'side-by-side';
 
   async init(): Promise<void> {
     this.bindEvents();
+    this.renderExtensionId();
     await this.loadSettings();
     await this.loadNativeStatus();
   }
@@ -239,7 +240,36 @@ class SettingsController {
     } catch {}
   }
 
-  private renderNativeStatus(): void {
+  renderExtensionId(): void {
+    const extId = typeof chrome !== 'undefined' && chrome.runtime?.id ? chrome.runtime.id : '';
+    const extIdEl = document.getElementById('diag-extension-id');
+    const helpExtIdEl = document.getElementById('companion-help-ext-id');
+    const cmdEl = document.getElementById('companion-install-cmd');
+    if (extIdEl) extIdEl.textContent = extId || '--';
+    if (helpExtIdEl) helpExtIdEl.textContent = extId || '--';
+    if (cmdEl && extId) cmdEl.textContent = `./scripts/install-macos.sh ${extId}`;
+
+    const copyBtn = document.getElementById('btn-copy-extension-id');
+    if (copyBtn && !copyBtn.hasAttribute('data-bound')) {
+      copyBtn.setAttribute('data-bound', 'true');
+      copyBtn.addEventListener('click', async () => {
+        if (extId) {
+          try {
+            await navigator.clipboard.writeText(extId);
+          } catch {}
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy ID';
+          }, 1500);
+        }
+      });
+    }
+  }
+
+  renderNativeStatus(status?: NativeStatus): void {
+    if (status) {
+      this.nativeStatus = status;
+    }
     const badge = document.getElementById('companion-badge');
     const statusText = document.getElementById('companion-status-text');
     const versionEl = document.getElementById('diag-host-version');
@@ -248,21 +278,32 @@ class SettingsController {
     const ffprobeEl = document.getElementById('diag-ffprobe');
     const helpBox = document.getElementById('companion-help-box');
     const platformEl = document.getElementById('companion-platform-text');
+    const ffmpegWarning = document.getElementById('ffmpeg-warning-banner');
 
     if (!badge || !statusText) return;
 
     badge.className = 'status-pill';
     if (this.nativeStatus.connected) {
-      badge.classList.add('status-connected');
-      statusText.textContent = 'Connected';
+      if (!this.nativeStatus.ffmpeg || !this.nativeStatus.ffprobe) {
+        badge.className = 'status-pill status-warning';
+        statusText.textContent = 'FFmpeg Missing - Remuxing Disabled';
+        if (ffmpegWarning) ffmpegWarning.classList.remove('hidden');
+      } else {
+        badge.className = 'status-pill status-connected';
+        statusText.textContent = 'Connected';
+        if (ffmpegWarning) ffmpegWarning.classList.add('hidden');
+      }
       if (helpBox) helpBox.classList.add('hidden');
     } else if (this.nativeStatus.error) {
-      badge.classList.add('status-disconnected');
+      badge.className = 'status-pill status-disconnected';
       statusText.textContent = 'Disconnected';
+      if (ffmpegWarning) ffmpegWarning.classList.add('hidden');
       if (helpBox) helpBox.classList.remove('hidden');
     } else {
-      badge.classList.add('status-connecting');
+      badge.className = 'status-pill status-connecting';
       statusText.textContent = 'Connecting...';
+      if (ffmpegWarning) ffmpegWarning.classList.add('hidden');
+      if (helpBox) helpBox.classList.add('hidden');
     }
 
     if (platformEl) platformEl.textContent = this.nativeStatus.platform || 'macOS';
@@ -273,7 +314,9 @@ class SettingsController {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const controller = new SettingsController();
-  controller.init();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    const controller = new SettingsController();
+    controller.init();
+  });
+}

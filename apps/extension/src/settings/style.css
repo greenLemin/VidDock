@@ -281,3 +281,25 @@ input:checked + .slider:before {
   font-family: var(--font-mono);
   overflow-x: auto;
 }
+
+.diag-item-id {
+  grid-column: span 2;
+}
+
+.extension-id-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.companion-instructions {
+  margin: 8px 0 4px 0;
+  color: var(--text-secondary);
+}
+
+.companion-hint {
+  margin: 6px 0 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}

@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { mediaStore } from '../src/background/media_store.ts';
 import {
   CHUNK_OR_IGNORABLE,
+  IS_AAC_SEGMENT,
   IS_DASH,
+  IS_DIRECT,
   IS_HLS,
   IS_MEDIASITE_OPTIONS,
   IS_SMOOTH,
@@ -82,5 +84,62 @@ describe('MediaSniffer Network & URL Filter Tests', () => {
     const items = await mediaStore.getTabMedia(1);
     expect(items.some((i) => i.url.includes('sound_blip.mp4'))).toBe(false);
     expect(items.some((i) => i.url.includes('full_video.mp4'))).toBe(true);
+  });
+
+  it('detects standalone .aac audio files while distinguishing them from ignorable chunks', async () => {
+    const sniffer = new MediaSniffer();
+    await mediaStore.clearTabMedia(1);
+
+    const aacUrl = 'https://example.com/audio/podcast_episode_12.aac?token=xyz';
+    expect(CHUNK_OR_IGNORABLE.test(aacUrl)).toBe(false);
+    expect(IS_AAC_SEGMENT.test(aacUrl)).toBe(false);
+    expect(IS_DIRECT.test(aacUrl)).toBe(true);
+
+    sniffer.onBeforeRequest({
+      tabId: 1,
+      url: aacUrl,
+    } as unknown as chrome.webRequest.WebRequestBodyDetails);
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const items = await mediaStore.getTabMedia(1);
+    expect(items.some((i) => i.url === aacUrl)).toBe(true);
+    const item = items.find((i) => i.url === aacUrl);
+    expect(item?.kind).toBe('direct');
+  });
+
+  it('filters out HLS and DASH AAC stream chunks and segments via IS_AAC_SEGMENT', async () => {
+    const sniffer = new MediaSniffer();
+    await mediaStore.clearTabMedia(1);
+
+    const segmentUrls = [
+      'https://cdn.example.com/stream/audio-seg-001.aac',
+      'https://cdn.example.com/stream/audio_segment_42.aac?auth=1',
+      'https://cdn.example.com/stream/chunk-12.aac#t=10',
+      'https://cdn.example.com/stream/frag-5.aac',
+      'https://cdn.example.com/stream/track_part_008.aac',
+    ];
+
+    for (const segUrl of segmentUrls) {
+      expect(IS_AAC_SEGMENT.test(segUrl)).toBe(true);
+      sniffer.onBeforeRequest({
+        tabId: 1,
+        url: segUrl,
+      } as unknown as chrome.webRequest.WebRequestBodyDetails);
+    }
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const items = await mediaStore.getTabMedia(1);
+    expect(items.length).toBe(0);
+  });
+
+  it('disambiguates mixed batch of audio URLs with case insensitivity and query parameters', () => {
+    expect(IS_DIRECT.test('https://example.com/AUDIO_SAMPLE.AAC')).toBe(true);
+    expect(IS_AAC_SEGMENT.test('https://example.com/AUDIO_SAMPLE.AAC')).toBe(false);
+    expect(CHUNK_OR_IGNORABLE.test('https://example.com/AUDIO_SAMPLE.AAC')).toBe(false);
+
+    expect(IS_AAC_SEGMENT.test('https://example.com/STREAM_SEG-99.AAC?query=1')).toBe(true);
+    expect(IS_AAC_SEGMENT.test('https://example.com/CHUNK-001.aac')).toBe(true);
   });
 });

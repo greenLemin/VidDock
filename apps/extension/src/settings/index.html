@@ -195,7 +195,22 @@
               <span id="companion-platform-text" class="companion-subtext">macOS</span>
             </div>
 
+            <div id="ffmpeg-warning-banner" class="banner banner-warning hidden" role="alert">
+              <span class="banner-icon">⚠️</span>
+              <span class="banner-text"
+                >FFmpeg was not detected. Stream remuxing (HLS/DASH/Mediasite) is disabled until FFmpeg is
+                installed.</span
+              >
+            </div>
+
             <div class="diagnostic-grid">
+              <div class="diag-item diag-item-id">
+                <span class="diag-label">Extension ID:</span>
+                <div class="extension-id-row">
+                  <code id="diag-extension-id" class="diag-val font-mono">--</code>
+                  <button type="button" id="btn-copy-extension-id" class="btn-secondary btn-sm">Copy ID</button>
+                </div>
+              </div>
               <div class="diag-item">
                 <span class="diag-label">Host Version:</span>
                 <span id="diag-host-version" class="diag-val">--</span>
@@ -220,7 +235,11 @@
                 The VidDock native companion is required for downloading HLS/DASH streams, decrypting segments, and
                 dual-track lecture remuxing.
               </p>
-              <pre><code>cd /Users/jake/Desktop/VidDock && bash scripts/install-macos.sh</code></pre>
+              <p class="companion-instructions">Run the native companion installer script from your terminal:</p>
+              <pre><code id="companion-install-cmd">./scripts/install-macos.sh</code></pre>
+              <p class="companion-hint">
+                Pass your Extension ID (<span id="companion-help-ext-id">--</span>) when prompted.
+              </p>
             </div>
           </div>
         </section>

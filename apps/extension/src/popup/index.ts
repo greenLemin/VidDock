@@ -20,7 +20,7 @@ function initColorTheme(): void {
 }
 initColorTheme();
 
-class PopupController {
+export class PopupController {
   private state: PopupState | null = null;
   private selectedQualities = new Map<string, string>();
   private selectedLayouts = new Map<string, DualStreamLayout>();
@@ -38,6 +38,11 @@ class PopupController {
     });
 
     document.getElementById('btn-open-settings')?.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('settings/index.html') });
+    });
+
+    document.getElementById('link-setup-ffmpeg')?.addEventListener('click', (e) => {
+      e.preventDefault();
       chrome.tabs.create({ url: chrome.runtime.getURL('settings/index.html') });
     });
 
@@ -118,27 +123,39 @@ class PopupController {
     this.renderTasksDock();
   }
 
-  private renderHostStatus(): void {
-    if (!this.state) return;
+  renderHostStatus(nativeStatus?: import('@viddock/shared').NativeStatus): void {
+    const native = nativeStatus || this.state?.native;
+    if (!native) return;
     const pill = document.getElementById('host-status-pill');
     const label = document.getElementById('host-status-text');
+    const warningBanner = document.getElementById('ffmpeg-warning-banner');
     if (!pill || !label) return;
 
     pill.className = 'status-pill';
-    const native = this.state.native;
 
     if (native.connected) {
-      pill.classList.add('status-connected');
-      label.textContent = `Host v${native.version || '1.0'}`;
-      pill.title = `Native Companion Connected\nFFmpeg: ${native.ffmpeg || 'detected'}\nPlatform: ${native.platform || 'macOS'}`;
+      if (!native.ffmpeg || !native.ffprobe) {
+        pill.classList.add('status-warning');
+        label.textContent = 'FFmpeg Missing';
+        pill.title =
+          'Native Companion Connected, but FFmpeg is not installed.\nStream remuxing is disabled.\nClick to view setup in Settings.';
+        if (warningBanner) warningBanner.classList.remove('hidden');
+      } else {
+        pill.classList.add('status-connected');
+        label.textContent = `Host v${native.version || '1.0'}`;
+        pill.title = `Native Companion Connected\nFFmpeg: ${native.ffmpeg || 'detected'}\nPlatform: ${native.platform || 'macOS'}`;
+        if (warningBanner) warningBanner.classList.add('hidden');
+      }
     } else if (native.error) {
       pill.classList.add('status-disconnected');
       label.textContent = 'Host Offline';
       pill.title = `Native Companion Disconnected: ${native.error}\nClick to view setup in Settings.`;
+      if (warningBanner) warningBanner.classList.add('hidden');
     } else {
       pill.classList.add('status-connecting');
       label.textContent = 'Connecting...';
       pill.title = 'Searching for local native host...';
+      if (warningBanner) warningBanner.classList.add('hidden');
     }
   }
 
@@ -559,7 +576,9 @@ class PopupController {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const controller = new PopupController();
-  controller.init();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    const controller = new PopupController();
+    controller.init();
+  });
+}

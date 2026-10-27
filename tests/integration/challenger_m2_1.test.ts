@@ -454,7 +454,7 @@ describe('Milestone 2 Challenger Empirical Test Suite', () => {
 
       // Permissions
       expect(manifest.permissions).toContain('storage');
-      expect(manifest.permissions).toContain('declarativeNetRequest');
+      expect(manifest.permissions).not.toContain('declarativeNetRequest');
       expect(manifest.permissions).toContain('nativeMessaging');
       expect(manifest.permissions).toContain('downloads');
       expect(manifest.host_permissions).toContain('<all_urls>');

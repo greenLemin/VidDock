@@ -1,18 +1,37 @@
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileP = promisify(execFile);
 
-const EXTRA_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/opt/local/bin', '/snap/bin'];
+export function getCandidateDirs(): string[] {
+  const dirs: string[] = [];
+  if (process.env.PATH) {
+    dirs.push(...process.env.PATH.split(path.delimiter));
+  }
+  // VidDock Application Support location per Decision 2
+  dirs.push(path.join(os.homedir(), 'Library', 'Application Support', 'VidDock', 'bin'));
+  dirs.push(
+    '/opt/homebrew/bin',
+    '/opt/homebrew/sbin',
+    '/usr/local/bin',
+    '/usr/local/sbin',
+    '/usr/bin',
+    '/bin',
+    '/opt/local/bin',
+    '/snap/bin',
+  );
+  return dirs;
+}
 
 export function findBinary(name: 'ffmpeg' | 'ffprobe'): string | undefined {
   const envKey = name === 'ffmpeg' ? 'VIDDOCK_FFMPEG' : 'VIDDOCK_FFPROBE';
   const fromEnv = process.env[envKey];
   if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
   const exe = process.platform === 'win32' ? `${name}.exe` : name;
-  const dirs = [...(process.env.PATH ?? '').split(path.delimiter), ...EXTRA_DIRS];
+  const dirs = getCandidateDirs();
   for (const d of dirs) {
     if (!d) continue;
     const p = path.join(d, exe);
