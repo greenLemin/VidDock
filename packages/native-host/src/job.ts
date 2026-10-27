@@ -208,7 +208,7 @@ export class DownloadJob {
     for (let i = 0; i < req.tracks.length; i++) {
       plans.push(await planTrack(req.tracks[i]!, { client, workDir: this.workDir, signal, trackIndex: i }));
     }
-    const streams = plans.flatMap((p) => p.streams);
+    const streams = plans.flatMap((p) => p.streams.map((s) => ({ ...s, label: s.label || p.label })));
     const needsFfmpeg =
       !(plans.length === 1 && plans[0]?.originalExt && req.container === 'auto' && req.subtitleMode !== 'embed') ||
       streams.some((s) => !s.direct);
@@ -317,7 +317,7 @@ export class DownloadJob {
         if (signal.aborted) throw e;
         throw new UserFacingError(`Downloaded ${s.kind} stream is not valid media (ffprobe failed)`, 'BAD_MEDIA');
       }
-      out.push({ file: s.file, kind: s.kind, probe: pr });
+      out.push({ file: s.file, kind: s.kind, probe: pr, label: s.label });
     }
     return out;
   }

@@ -91,7 +91,7 @@ class SettingsController {
           .querySelectorAll('#mediasite-layout-segmented .segment-btn')
           .forEach((b) => b.classList.remove('active'));
         target.classList.add('active');
-        // Stored in settings or default layout
+        this.savePartialSettings({ dualStreamLayout: layout });
       });
     });
 
@@ -208,6 +208,13 @@ class SettingsController {
       templateInput.value = this.settings.filenameTemplate || '{title}';
       this.updateTemplatePreview(templateInput.value);
     }
+
+    // Mediasite Layout
+    const layout = this.settings.dualStreamLayout || 'side-by-side';
+    this.selectedMediasiteLayout = layout;
+    document.querySelectorAll('#mediasite-layout-segmented .segment-btn').forEach((b) => {
+      b.classList.toggle('active', b.getAttribute('data-layout') === layout);
+    });
   }
 
   private async savePartialSettings(partial: Partial<Settings>): Promise<void> {

@@ -40,12 +40,26 @@ export function mediasitePresentationId(url: string): string | undefined {
   return m?.[1];
 }
 
+export const AUDIO_EXT = /\.(m4a|aac|mp3|ogg|oga|wav|flac|opus|weba)(\?|$)/i;
+
+export function isAudioUrlOrMime(mime?: string, url?: string): boolean {
+  if (mime && mime.toLowerCase().startsWith('audio/')) return true;
+  if (url && AUDIO_EXT.test(url)) return true;
+  return false;
+}
+
 export function kindFromMime(mime: string, url: string): MediaKind | 'smooth' | undefined {
   const m = mime.toLowerCase();
   if (/mpegurl/.test(m) || /\.m3u8(\?|$)/i.test(url)) return 'hls';
   if (m === 'application/dash+xml' || /\.mpd(\?|$)/i.test(url)) return 'dash';
   if (/ms-sstr/.test(m) || /\.ism\/manifest/i.test(url)) return 'smooth';
-  if (m.startsWith('video/') || m.startsWith('audio/') || /\.(mp4|m4v|webm|mov)(\?|$)/i.test(url)) return 'direct';
+  if (
+    m.startsWith('video/') ||
+    m.startsWith('audio/') ||
+    /\.(mp4|m4v|webm|mov)(\?|$)/i.test(url) ||
+    AUDIO_EXT.test(url)
+  )
+    return 'direct';
   return undefined;
 }
 
@@ -117,11 +131,23 @@ export function parsePlayerOptions(json: unknown, pageUrl = ''): MediasitePresen
 
   rawStreams.forEach((s, i) => {
     const urls: MediasiteMediaUrl[] = [];
-    for (const v of Array.isArray(s?.VideoUrls) ? s.VideoUrls : []) {
-      const loc = typeof v?.Location === 'string' ? v.Location : undefined;
+    const candidateUrls = [
+      ...(Array.isArray(s?.VideoUrls) ? s.VideoUrls : []),
+      ...(Array.isArray(s?.AudioUrls) ? s.AudioUrls : []),
+      ...(s?.AudioUrl ? [s.AudioUrl] : []),
+    ];
+
+    for (const v of candidateUrls) {
+      const loc = typeof v === 'string' ? v : typeof v?.Location === 'string' ? v.Location : undefined;
       if (!loc || !parseUrl(loc)) continue;
-      const mime = String(v?.MimeType ?? '');
-      const kind = kindFromMime(mime, loc);
+      let mime = typeof v === 'object' && v ? String(v.MimeType ?? '') : '';
+      if (!mime && isAudioUrlOrMime(undefined, loc)) {
+        mime = 'audio/mp4';
+      }
+      let kind = kindFromMime(mime, loc);
+      if (!kind && isAudioUrlOrMime(mime, loc)) {
+        kind = 'direct';
+      }
       if (!kind) continue;
       urls.push({
         url: loc,
@@ -143,9 +169,17 @@ export function parsePlayerOptions(json: unknown, pageUrl = ''): MediasitePresen
     const slidesOnly = urls.length === 0 && hasSlides;
     if (urls.length === 0 && !slidesOnly) return;
 
+    let streamType = typeof s?.StreamType === 'number' ? s.StreamType : undefined;
+    if (
+      streamType === undefined &&
+      (urls.some((u) => isAudioUrlOrMime(u.mimeType, u.url)) || (s?.AudioUrls && s.AudioUrls.length > 0))
+    ) {
+      streamType = 2;
+    }
+
     streams.push({
       index: i,
-      streamType: typeof s?.StreamType === 'number' ? s.StreamType : undefined,
+      streamType,
       label: '',
       urls,
       slidesOnly,
@@ -153,9 +187,48 @@ export function parsePlayerOptions(json: unknown, pageUrl = ''): MediasitePresen
     });
   });
 
-  const videoStreams = streams.filter((s) => !s.slidesOnly);
+  // Check Presentation.AudioUrls and Presentation.AudioUrl
+  const candidatePresAudio = [
+    ...(Array.isArray(pres.AudioUrls) ? pres.AudioUrls : []),
+    ...(pres.AudioUrl ? [pres.AudioUrl] : []),
+  ];
+  if (candidatePresAudio.length > 0) {
+    const presAudioUrls: MediasiteMediaUrl[] = [];
+    for (const v of candidatePresAudio) {
+      const loc = typeof v === 'string' ? v : typeof v?.Location === 'string' ? v.Location : undefined;
+      if (!loc || !parseUrl(loc)) continue;
+      const mime = typeof v === 'object' && v ? String(v.MimeType ?? 'audio/mp4') : 'audio/mp4';
+      const kind = kindFromMime(mime, loc) ?? 'direct';
+      presAudioUrls.push({
+        url: loc,
+        mimeType: mime,
+        kind,
+        derivedHls: kind === 'smooth' ? deriveHlsFromSmooth(loc) : undefined,
+      });
+    }
+    if (presAudioUrls.length > 0) {
+      streams.push({
+        index: streams.length,
+        streamType: 2,
+        label: 'Audio',
+        urls: presAudioUrls,
+        slidesOnly: false,
+      });
+    }
+  }
+
+  const audioStreams = streams.filter(
+    (s) =>
+      !s.slidesOnly &&
+      (s.streamType === 2 || (s.urls.length > 0 && s.urls.every((u) => isAudioUrlOrMime(u.mimeType, u.url)))),
+  );
+  const videoStreams = streams.filter((s) => !s.slidesOnly && !audioStreams.includes(s));
+
   videoStreams.forEach((s, i) => {
     s.label = streamLabel(i, videoStreams.length, s.streamType, false);
+  });
+  audioStreams.forEach((s) => {
+    s.label = 'Audio';
   });
   streams.filter((s) => s.slidesOnly).forEach((s) => (s.label = 'Slides'));
 

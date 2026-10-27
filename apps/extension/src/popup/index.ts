@@ -61,20 +61,25 @@ class PopupController {
   private connectStreamingPort(): void {
     try {
       this.uiPort = chrome.runtime.connect({ name: 'viddock-ui' });
-      this.uiPort.onMessage.addListener((msg: { type: string; task?: DownloadTask; taskId?: string }) => {
-        if (msg.type === 'task.update' && msg.task && this.state) {
-          const idx = this.state.tasks.findIndex((t) => t.id === msg.task!.id);
-          if (idx >= 0) {
-            this.state.tasks[idx] = msg.task;
-          } else {
-            this.state.tasks.push(msg.task);
+      this.uiPort.onMessage.addListener(
+        (msg: { type: string; tasks?: DownloadTask[]; task?: DownloadTask; taskId?: string }) => {
+          if (msg.type === 'snapshot' && Array.isArray(msg.tasks) && this.state) {
+            this.state.tasks = msg.tasks;
+            this.renderTasksDock();
+          } else if (msg.type === 'task.update' && msg.task && this.state) {
+            const idx = this.state.tasks.findIndex((t) => t.id === msg.task!.id);
+            if (idx >= 0) {
+              this.state.tasks[idx] = msg.task;
+            } else {
+              this.state.tasks.push(msg.task);
+            }
+            this.renderTasksDock();
+          } else if (msg.type === 'task.remove' && msg.taskId && this.state) {
+            this.state.tasks = this.state.tasks.filter((t) => t.id !== msg.taskId);
+            this.renderTasksDock();
           }
-          this.renderTasksDock();
-        } else if (msg.type === 'task.remove' && msg.taskId && this.state) {
-          this.state.tasks = this.state.tasks.filter((t) => t.id !== msg.taskId);
-          this.renderTasksDock();
-        }
-      });
+        },
+      );
       this.uiPort.onDisconnect.addListener(() => {
         this.uiPort = null;
       });
@@ -145,11 +150,8 @@ class PopupController {
     if (!mediaList || !emptyState) return;
 
     const items = this.state.items || [];
-    if (countBadge) {
-      countBadge.textContent = String(items.length);
-    }
-
     if (items.length === 0) {
+      if (countBadge) countBadge.textContent = '0';
       mediaList.innerHTML = '';
       emptyState.classList.remove('hidden');
       return;
@@ -158,7 +160,31 @@ class PopupController {
     emptyState.classList.add('hidden');
     mediaList.innerHTML = '';
 
+    // Group Mediasite items with groupId into a unified presentation card
+    const mediasiteGroups = new Map<string, MediaItem[]>();
+    const otherItems: MediaItem[] = [];
+
     for (const item of items) {
+      if (item.source === 'mediasite' && item.groupId) {
+        const group = mediasiteGroups.get(item.groupId) || [];
+        group.push(item);
+        mediasiteGroups.set(item.groupId, group);
+      } else {
+        otherItems.push(item);
+      }
+    }
+
+    const totalCards = mediasiteGroups.size + otherItems.length;
+    if (countBadge) {
+      countBadge.textContent = String(totalCards);
+    }
+
+    for (const [groupId, groupItems] of mediasiteGroups.entries()) {
+      const card = this.createMediasitePresentationCard(groupId, groupItems);
+      mediaList.appendChild(card);
+    }
+
+    for (const item of otherItems) {
       const card = this.createMediaCard(item);
       mediaList.appendChild(card);
     }
@@ -245,9 +271,12 @@ class PopupController {
         { id: 'side-by-side', label: 'Side-by-Side' },
         { id: 'pip', label: 'PiP' },
         { id: 'multi-track', label: 'Tracks' },
+        { id: 'separate', label: 'Separate' },
       ];
 
-      const currentLayout = this.selectedLayouts.get(item.id) || item.layout || 'side-by-side';
+      const layoutKey = item.groupId || item.id;
+      const currentLayout =
+        this.selectedLayouts.get(layoutKey) || this.state?.settings?.dualStreamLayout || item.layout || 'side-by-side';
 
       layouts.forEach((l) => {
         const btn = document.createElement('button');
@@ -255,7 +284,7 @@ class PopupController {
         btn.className = `segment-btn ${l.id === currentLayout ? 'active' : ''}`;
         btn.textContent = l.label;
         btn.addEventListener('click', () => {
-          this.selectedLayouts.set(item.id, l.id);
+          this.selectedLayouts.set(layoutKey, l.id);
           segmented.querySelectorAll('.segment-btn').forEach((b) => b.classList.remove('active'));
           btn.classList.add('active');
         });
@@ -285,7 +314,199 @@ class PopupController {
         const params: StartDownloadParams = {
           itemId: item.id,
           qualityId: this.selectedQualities.get(item.id) || qualities[0]?.id,
-          layout: this.selectedLayouts.get(item.id) || item.layout || 'side-by-side',
+          layout:
+            this.selectedLayouts.get(item.groupId || item.id) ||
+            this.state?.settings?.dualStreamLayout ||
+            item.layout ||
+            'side-by-side',
+        };
+
+        try {
+          const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ taskId: string }>>({
+            type: 'startDownload',
+            params,
+          });
+          if (res && res.ok) {
+            btnDownload.textContent = 'Queued in VidDock';
+            setTimeout(() => {
+              this.refreshState();
+            }, 500);
+          } else {
+            btnDownload.textContent = 'Error starting download';
+            btnDownload.disabled = false;
+          }
+        } catch {
+          btnDownload.textContent = 'Download Failed';
+          btnDownload.disabled = false;
+        }
+      });
+    }
+
+    card.appendChild(btnDownload);
+    return card;
+  }
+
+  private createMediasitePresentationCard(groupId: string, items: MediaItem[]): HTMLElement {
+    const card = document.createElement('div');
+    card.className = 'media-card';
+
+    // Top Row: Stream Badge and Duration
+    const topRow = document.createElement('div');
+    topRow.className = 'media-card-top';
+
+    const badge = document.createElement('span');
+    badge.className = 'badge-stream badge-mediasite';
+    badge.textContent = 'Mediasite';
+    topRow.appendChild(badge);
+
+    const maxDuration = Math.max(...items.map((i) => i.durationSec || 0));
+    if (maxDuration > 0) {
+      const duration = document.createElement('span');
+      duration.className = 'media-duration';
+      duration.textContent = formatDuration(maxDuration);
+      topRow.appendChild(duration);
+    }
+    card.appendChild(topRow);
+
+    // Presentation Title
+    const primaryItem = items.find((i) => i.hasVideo) || items[0]!;
+    const titleText =
+      primaryItem.title.replace(/ - (Primary video|Secondary video|Slides|Audio|Presentation video).*$/i, '').trim() ||
+      primaryItem.title;
+
+    const title = document.createElement('h3');
+    title.className = 'media-title';
+    title.textContent = titleText;
+    title.title = titleText;
+    card.appendChild(title);
+
+    // Detected Feeds Row
+    const feedsRow = document.createElement('div');
+    feedsRow.className = 'mediasite-feeds-row';
+
+    const feedsLabel = document.createElement('span');
+    feedsLabel.className = 'feeds-label';
+    feedsLabel.textContent = 'Detected Feeds:';
+    feedsRow.appendChild(feedsLabel);
+
+    const feedsList = document.createElement('div');
+    feedsList.className = 'feeds-chips';
+    for (const feed of items) {
+      const chip = document.createElement('span');
+      chip.className = 'feed-chip';
+      chip.textContent = feed.trackLabel || (feed.hasVideo ? 'Video' : 'Audio');
+      feedsList.appendChild(chip);
+    }
+    feedsRow.appendChild(feedsList);
+    card.appendChild(feedsRow);
+
+    // Quality Selector Dropdown
+    const controlsRow = document.createElement('div');
+    controlsRow.className = 'media-controls-row';
+
+    const selectWrapper = document.createElement('div');
+    selectWrapper.className = 'select-wrapper';
+
+    const select = document.createElement('select');
+    select.className = 'select-apple';
+    select.setAttribute('aria-label', 'Select video quality');
+
+    const qualities =
+      primaryItem.qualities && primaryItem.qualities.length > 0
+        ? primaryItem.qualities
+        : [{ id: 'q0', label: 'Default' }];
+
+    const selectedQ = this.selectedQualities.get(groupId) || qualities[0]?.id || 'q0';
+
+    for (const q of qualities) {
+      const opt = document.createElement('option');
+      opt.value = q.id;
+      opt.textContent = q.label;
+      if (q.id === selectedQ) opt.selected = true;
+      select.appendChild(opt);
+    }
+
+    select.addEventListener('change', () => {
+      this.selectedQualities.set(groupId, select.value);
+    });
+
+    const chevron = document.createElement('span');
+    chevron.className = 'select-chevron';
+    chevron.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+    selectWrapper.appendChild(select);
+    selectWrapper.appendChild(chevron);
+    controlsRow.appendChild(selectWrapper);
+    card.appendChild(controlsRow);
+
+    // Segmented Layout Control
+    const layoutGroup = document.createElement('div');
+    layoutGroup.className = 'mediasite-layout-group';
+
+    const layoutLabel = document.createElement('span');
+    layoutLabel.className = 'mediasite-layout-label';
+    layoutLabel.textContent = 'Dual-Stream Layout:';
+    layoutGroup.appendChild(layoutLabel);
+
+    const segmented = document.createElement('div');
+    segmented.className = 'segmented-control';
+
+    const layouts: { id: DualStreamLayout; label: string }[] = [
+      { id: 'side-by-side', label: 'Side-by-Side' },
+      { id: 'pip', label: 'PiP' },
+      { id: 'multi-track', label: 'Tracks' },
+      { id: 'separate', label: 'Separate' },
+    ];
+
+    const currentLayout =
+      this.selectedLayouts.get(groupId) ||
+      this.state?.settings?.dualStreamLayout ||
+      primaryItem.layout ||
+      'side-by-side';
+
+    layouts.forEach((l) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `segment-btn ${l.id === currentLayout ? 'active' : ''}`;
+      btn.textContent = l.label;
+      btn.addEventListener('click', () => {
+        this.selectedLayouts.set(groupId, l.id);
+        segmented.querySelectorAll('.segment-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      segmented.appendChild(btn);
+    });
+
+    layoutGroup.appendChild(segmented);
+    card.appendChild(layoutGroup);
+
+    // Download Button
+    const btnDownload = document.createElement('button');
+    btnDownload.type = 'button';
+    btnDownload.className = 'btn-primary';
+    btnDownload.style.width = '100%';
+
+    const unsupported = items.find((i) => i.unsupportedReason)?.unsupportedReason;
+    if (unsupported) {
+      btnDownload.disabled = true;
+      btnDownload.style.opacity = '0.6';
+      btnDownload.textContent = unsupported;
+    } else {
+      btnDownload.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download Presentation`;
+      btnDownload.addEventListener('click', async () => {
+        btnDownload.disabled = true;
+        btnDownload.textContent = 'Starting...';
+
+        const chosenLayout =
+          this.selectedLayouts.get(groupId) ||
+          this.state?.settings?.dualStreamLayout ||
+          primaryItem.layout ||
+          'side-by-side';
+
+        const params: StartDownloadParams = {
+          itemId: primaryItem.id,
+          qualityId: this.selectedQualities.get(groupId) || qualities[0]?.id,
+          layout: chosenLayout,
         };
 
         try {

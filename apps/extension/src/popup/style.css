@@ -176,6 +176,35 @@ body {
   text-transform: uppercase;
 }
 
+.mediasite-feeds-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.feeds-label {
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+}
+
+.feeds-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.feed-chip {
+  font-size: var(--text-xs);
+  padding: 2px 6px;
+  background: var(--bg-surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+
 /* Tasks Summary Dock */
 .tasks-summary-dock {
   background: var(--bg-surface);

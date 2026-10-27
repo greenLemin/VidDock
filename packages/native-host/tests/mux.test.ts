@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { findBinary, probe, runFfmpeg, type ProbeResult } from '../src/ffmpeg.ts';
-import { buildMuxArgs, chooseContainer, type MuxInput } from '../src/mux.ts';
+import { buildMuxArgs, chooseContainer, type ContainerChoice, type MuxInput } from '../src/mux.ts';
 import { analyzeProbe } from '../src/verify.ts';
 import { ensureFixtures } from '../../../tests/helpers/fixtures.ts';
 
@@ -464,4 +464,171 @@ describe('dual-stream live remuxing integration', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it('guarantees slides/screen is main canvas and presenter camera is overlay inset in PiP layout regardless of input order', () => {
+    // Input 0 is camera, Input 1 is slides
+    const inputs: MuxInput[] = [
+      makeMockInput({ file: 'camera_presenter.mp4', videoCodecs: ['h264'], audioCodecs: ['aac'] }),
+      makeMockInput({ file: 'presentation_slides.mp4', videoCodecs: ['h264'] }),
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'pip');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'pip_swapped.mp4',
+      title: 'PiP Canvas Test',
+      layout: 'pip',
+    });
+
+    const fcIndex = args.indexOf('-filter_complex');
+    const filter = args[fcIndex + 1]!;
+    // Slides (input 1) must be scaled as [main], camera (input 0) must be scaled as [pip]
+    expect(filter).toContain('[1:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+    expect(filter).toContain('[0:v:0]scale=iw/3.5:-2,setsar=1[pip]');
+    expect(filter).toContain('[main][pip]overlay=W-w-24:H-h-24[v]');
+  });
+
+  it('maps and encodes decoupled audio stream when input container has standalone audio', () => {
+    const inputs: MuxInput[] = [
+      makeMockInput({ file: 'slides.mp4', videoCodecs: ['h264'] }),
+      makeMockInput({ file: 'camera.mp4', videoCodecs: ['h264'] }),
+      makeMockInput({ file: 'audio_mic.mp4', audioCodecs: ['aac'] }),
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'side-by-side');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'out_sbs_audio.mp4',
+      title: 'Decoupled Audio SbS Test',
+      layout: 'side-by-side',
+    });
+
+    expect(args).toContain('-map');
+    expect(args).toContain('[v]');
+    // Audio from input 2 should be mapped
+    expect(args).toContain('2:a');
+    expect(args).toContain('-c:a');
+  });
+
+  it('correctly orders slides and camera using track labels even when file paths are opaque stream.ts', () => {
+    // Input 0 is Primary video (camera), Input 1 is Secondary video (slides)
+    const inputs: MuxInput[] = [
+      {
+        ...makeMockInput({ file: '/tmp/work/t0/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Primary video',
+      },
+      {
+        ...makeMockInput({ file: '/tmp/work/t1/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Secondary video (stream 2, type 1)',
+      },
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'pip');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'pip_labeled.mp4',
+      title: 'PiP Labeled Test',
+      layout: 'pip',
+    });
+
+    const fcIndex = args.indexOf('-filter_complex');
+    const filter = args[fcIndex + 1]!;
+    // Input 1 (Secondary video / slides) must be [main], Input 0 (Primary video / camera) must be [pip]
+    expect(filter).toContain('[1:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+    expect(filter).toContain('[0:v:0]scale=iw/3.5:-2,setsar=1[pip]');
+    expect(filter).toContain('[main][pip]overlay=W-w-24:H-h-24[v]');
+  });
+
+  it('correctly selects slides feed as main canvas when presentation has 3 video streams in PiP', () => {
+    const inputs: MuxInput[] = [
+      {
+        ...makeMockInput({ file: '/tmp/work/t0/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Primary video',
+      },
+      {
+        ...makeMockInput({ file: '/tmp/work/t1/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Secondary video (stream 2, type 0)',
+      },
+      {
+        ...makeMockInput({ file: '/tmp/work/t2/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Secondary video (stream 3, type 1)',
+      },
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'pip');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'pip_3streams.mp4',
+      title: 'PiP 3 Streams Test',
+      layout: 'pip',
+    });
+
+    const fcIndex = args.indexOf('-filter_complex');
+    const filter = args[fcIndex + 1]!;
+    // Input 2 (Secondary video stream 3, type 1 / slides) must be [main]
+    expect(filter).toContain('[2:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+  });
+
+  it('transcodes video with libvpx-vp9 and audio with libopus when dual-stream choice is webm', () => {
+    const inputs: MuxInput[] = [
+      makeMockInput({ file: 'cam.mp4', videoCodecs: ['vp9'], audioCodecs: ['opus'] }),
+      makeMockInput({ file: 'slides.mp4', videoCodecs: ['vp9'] }),
+    ];
+
+    const c: ContainerChoice = { ext: 'webm', format: 'webm' };
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice: c,
+      output: 'dual.webm',
+      title: 'WebM Dual Stream Test',
+      layout: 'side-by-side',
+    });
+
+    expect(args).toContain('-c:v');
+    expect(args).toContain('libvpx-vp9');
+    expect(args).not.toContain('libx264');
+    expect(args).toContain('-c:a');
+  });
+
+  it('correctly selects slides and camera feeds when presentation has 3 video streams in Side-by-Side layout', () => {
+    const inputs: MuxInput[] = [
+      {
+        ...makeMockInput({ file: '/tmp/work/t0/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Primary video (Camera 1)',
+      },
+      {
+        ...makeMockInput({ file: '/tmp/work/t1/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Secondary video (stream 2, type 0 - Camera 2)',
+      },
+      {
+        ...makeMockInput({ file: '/tmp/work/t2/main/stream.ts', videoCodecs: ['h264'] }),
+        label: 'Secondary video (stream 3, type 1 - Presentation Slides)',
+      },
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'side-by-side');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'sbs_3streams.mp4',
+      title: 'Side-by-Side 3 Streams Test',
+      layout: 'side-by-side',
+    });
+
+    const fcIndex = args.indexOf('-filter_complex');
+    const filter = args[fcIndex + 1]!;
+    // Input 2 (Slides) must be included in the filter, not omitted!
+    expect(filter).toContain('[2:v:0]');
+    expect(filter).toContain('hstack=inputs=2[v]');
+  });
 });

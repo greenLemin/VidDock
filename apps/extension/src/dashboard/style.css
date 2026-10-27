@@ -189,6 +189,7 @@ body {
   color: var(--text-secondary);
 }
 
+.status-badge-preparing,
 .status-badge-downloading,
 .status-badge-processing,
 .status-badge-verifying {
@@ -204,6 +205,11 @@ body {
 .status-badge-failed {
   background: var(--status-red-bg);
   color: var(--status-red);
+}
+
+.status-badge-cancelled {
+  background: var(--bg-surface-secondary);
+  color: var(--text-tertiary);
 }
 
 .status-badge-paused {

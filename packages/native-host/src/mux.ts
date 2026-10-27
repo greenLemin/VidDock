@@ -5,6 +5,7 @@ export interface MuxInput {
   file: string;
   kind: 'video' | 'audio' | 'muxed';
   probe: ProbeResult;
+  label?: string;
 }
 
 export interface MuxSubtitle {
@@ -147,8 +148,35 @@ export function buildMuxArgs(opts: {
 
   const isDualStream = (layout === 'side-by-side' || layout === 'pip') && videoStreams.length >= 2;
   if (isDualStream) {
-    const v0 = videoStreams[0]!;
-    const v1 = videoStreams[1]!;
+    let v0 = videoStreams[0]!;
+    let v1 = videoStreams[1]!;
+
+    const getScore = (v: StreamRef) => {
+      const inp = inputs[v.inputIndex];
+      const text = `${inp?.label || ''} ${inp?.file || ''}`;
+      let score = 0;
+      if (/slide|screen|presentation|content|secondary|type\s*1/i.test(text)) score += 100;
+      if (/camera|presenter|primary|type\s*0/i.test(text)) score -= 100;
+      return score;
+    };
+
+    if (layout === 'pip') {
+      if (videoStreams.length > 2) {
+        const sorted = [...videoStreams].sort((a, b) => getScore(b) - getScore(a));
+        v0 = sorted[0]!;
+        v1 = sorted[1]!;
+      } else if (getScore(v0) < getScore(v1)) {
+        const tmp = v0;
+        v0 = v1;
+        v1 = tmp;
+      }
+    } else if (layout === 'side-by-side' && videoStreams.length > 2) {
+      const sorted = [...videoStreams].sort((a, b) => getScore(b) - getScore(a));
+      // sorted[0] is slides/screen (highest score), sorted[sorted.length - 1] is camera (lowest score)
+      v0 = sorted[sorted.length - 1]!;
+      v1 = sorted[0]!;
+    }
+
     const v0Ref = `${v0.inputIndex}:v:${v0.videoIndex}`;
     const v1Ref = `${v1.inputIndex}:v:${v1.videoIndex}`;
     if (layout === 'side-by-side') {
@@ -166,16 +194,27 @@ export function buildMuxArgs(opts: {
     }
     args.push('-map', '[v]');
     if (audioStreams.length > 0) {
-      const primaryAudio = audioStreams[0]!;
+      const primaryAudio =
+        audioStreams.find((a) => {
+          const inp = inputs[a.inputIndex];
+          const text = `${inp?.label || ''} ${inp?.file || ''}`;
+          return inp?.kind === 'audio' || /audio|mic|sound/i.test(text);
+        }) ?? audioStreams[0]!;
       args.push('-map', `${primaryAudio.inputIndex}:a`);
       const codec = primaryAudio.codecName ?? '';
       if (c.ext === 'mp4' && !MP4_AUDIO.has(codec)) {
         args.push('-c:a', 'aac', '-b:a', '192k');
+      } else if (c.ext === 'webm' && !WEBM_AUDIO.has(codec)) {
+        args.push('-c:a', 'libopus', '-b:a', '128k');
       } else {
         args.push('-c:a', 'copy');
       }
     }
-    args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-pix_fmt', 'yuv420p');
+    if (c.ext === 'webm') {
+      args.push('-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', '30', '-pix_fmt', 'yuv420p');
+    } else {
+      args.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '22', '-pix_fmt', 'yuv420p');
+    }
   } else {
     inputs.forEach((_i, idx) => {
       args.push('-map', `${idx}:v?`, '-map', `${idx}:a?`);

@@ -10,6 +10,7 @@ import {
   describeDash,
   describeHls,
   deriveHlsFromSmooth,
+  isAudioUrlOrMime,
   kindFromMime,
   parsePlayerOptions,
   sanitizeFilename,
@@ -247,7 +248,7 @@ export class MediaSniffer {
     if (!pres || pres.streams.length === 0) return;
 
     const groupId = pres.presentationId || `group_${Date.now()}`;
-    const defaultLayout = (await taskCoordinator.getSettings()).filenameTemplate ? 'side-by-side' : 'multi-track';
+    const defaultLayout = (await taskCoordinator.getSettings()).dualStreamLayout || 'side-by-side';
 
     for (const s of pres.streams) {
       if (s.slidesOnly || s.urls.length === 0) continue;
@@ -256,6 +257,7 @@ export class MediaSniffer {
 
       const streamUrl = primaryUrl.derivedHls || primaryUrl.url;
       const streamKind = primaryUrl.kind === 'smooth' ? 'hls' : primaryUrl.kind;
+      const isAudio = s.streamType === 2 || isAudioUrlOrMime(primaryUrl.mimeType, streamUrl);
 
       const item: MediaItem = {
         id: `ms_${groupId}_${s.index}`,
@@ -278,7 +280,7 @@ export class MediaSniffer {
         groupId,
         trackLabel: s.label,
         layout: defaultLayout,
-        hasVideo: true,
+        hasVideo: !isAudio,
         hasAudio: true,
         detectedAt: Date.now(),
       };

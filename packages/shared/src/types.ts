@@ -237,6 +237,8 @@ export interface Settings {
   directViaChrome: boolean;
   /** Minimum size for network-detected plain media files (bytes). */
   minDirectBytes: number;
+  /** User's dual-stream layout preference for multi-feed presentations. */
+  dualStreamLayout: DualStreamLayout;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -253,4 +255,5 @@ export const DEFAULT_SETTINGS: Settings = {
   outputDir: '',
   directViaChrome: true,
   minDirectBytes: 262144,
+  dualStreamLayout: 'side-by-side',
 };

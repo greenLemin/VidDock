@@ -28,7 +28,10 @@ export class TaskManager {
   /** Enqueue (or re-enqueue after failure/cancel/restart) a download. */
   submit(req: NativeDownloadRequest): TaskInfo {
     const existing = this.jobs.get(req.taskId);
-    if (existing && (isActive(existing.state) || existing.state === 'queued')) return existing.info;
+    if (existing && (isActive(existing.state) || existing.state === 'queued')) {
+      this.schedule();
+      return existing.info;
+    }
     const job = new DownloadJob(req, this.ctx);
     this.jobs.set(req.taskId, job);
     job.markQueued();

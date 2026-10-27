@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { beforeEach, describe, expect, it } from 'vitest';
-import type { HostRequest, MediaItem, TaskInfo, TaskState } from '@viddock/shared';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { DownloadTask, HostRequest, MediaItem, TaskInfo, TaskState } from '@viddock/shared';
 import {
   applyFilenameTemplate,
   canTransition,
@@ -13,6 +13,7 @@ import {
   sanitizeFilename,
 } from '@viddock/shared';
 import { mediaStore } from '../src/background/media_store.ts';
+import { NativeClient } from '../src/background/native_client.ts';
 import { TaskCoordinator } from '../src/background/task_coordinator.ts';
 import { setupChromeMock } from './mocks/chrome.ts';
 
@@ -21,11 +22,23 @@ const __dirname = path.dirname(__filename);
 
 class MockNativeClient {
   private taskListeners = new Set<(task: TaskInfo) => void>();
+  private statusListeners = new Set<(status: { connected: boolean; error?: string }) => void>();
   public sentRequests: (HostRequest & { id?: string })[] = [];
 
   onTaskUpdate(listener: (task: TaskInfo) => void): () => void {
     this.taskListeners.add(listener);
     return () => this.taskListeners.delete(listener);
+  }
+
+  onStatusChange(listener: (status: { connected: boolean; error?: string }) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
+
+  simulateStatusChange(status: { connected: boolean; error?: string }) {
+    for (const listener of this.statusListeners) {
+      listener(status);
+    }
   }
 
   async sendRequest<T = unknown>(req: HostRequest & { id?: string }): Promise<T> {
@@ -344,6 +357,646 @@ describe('CHALLENGER Milestone 2: Empirical Stress Harness', () => {
       expect(remainingStates).not.toContain('failed');
       expect(remainingStates).not.toContain('cancelled');
     });
+
+    it('reconciles interrupted tasks across service worker restarts into queued state', async () => {
+      // Simulate stored active task in storage
+      const interruptedTask = {
+        id: 'interrupted-task-1',
+        engine: 'native',
+        kind: 'hls',
+        title: 'Interrupted Video',
+        sourceUrl: 'https://example.com/stream.m3u8',
+        pageUrl: 'https://example.com/watch',
+        state: 'downloading',
+        progress: emptyProgress(),
+        request: {
+          taskId: 'interrupted-task-1',
+          title: 'Interrupted Video',
+          fileName: 'interrupted_video',
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: 'https://example.com/stream.m3u8' }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: { segmentConcurrency: 6, maxRetries: 5, retryBaseMs: 1000 },
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+
+      await chrome.storage.local.set({ tasks: { 'interrupted-task-1': interruptedTask } });
+
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const task = coordinator.getTask('interrupted-task-1');
+      expect(task).toBeDefined();
+      // Must be reconciled from downloading to queued
+      expect(task?.state).toBe('queued');
+
+      // Can be started
+      await coordinator.handleTaskAction('interrupted-task-1', 'force-start');
+      expect(mockClient.sentRequests.some((r) => r.type === 'download.start')).toBe(true);
+
+      // Or can be removed
+      await coordinator.handleTaskAction('interrupted-task-1', 'remove');
+      expect(coordinator.getTask('interrupted-task-1')).toBeUndefined();
+    });
+
+    it('provides actionable controls for queued tasks: force-start, cancel, and remove', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const item = createTestMediaItem({
+        id: 'item-queue-test',
+        tabId: 1,
+        url: 'https://example.com/queue.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Queue Test Video',
+        qualities: [{ id: 'q', label: '1080p', ref: 'https://example.com/queue.m3u8' }],
+      });
+      await mediaStore.addMediaItem(item);
+
+      const { taskId } = await coordinator.startDownload({ itemId: item.id });
+      const task = coordinator.getTask(taskId);
+      expect(task?.state).toBe('queued');
+
+      // Test cancel
+      await coordinator.handleTaskAction(taskId, 'cancel');
+      expect(coordinator.getTask(taskId)?.state).toBe('cancelled');
+
+      // Test force-start (re-queue and submit)
+      mockClient.sentRequests = [];
+      await coordinator.handleTaskAction(taskId, 'force-start');
+      expect(coordinator.getTask(taskId)?.state).toBe('queued');
+      expect(mockClient.sentRequests.some((r) => r.type === 'download.start')).toBe(true);
+
+      // Test remove
+      await coordinator.handleTaskAction(taskId, 'remove');
+      expect(coordinator.getTask(taskId)).toBeUndefined();
+    });
+
+    it('reconciles active tasks to queued on companion disconnect', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const item = createTestMediaItem({
+        id: 'item-active-test',
+        tabId: 1,
+        url: 'https://example.com/stream.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Active Stream',
+      });
+      await mediaStore.addMediaItem(item);
+
+      const { taskId } = await coordinator.startDownload({ itemId: item.id });
+      // Simulate task moving to downloading
+      mockClient.simulateTaskUpdate({
+        id: taskId,
+        state: 'downloading',
+        progress: {
+          bytesDownloaded: 1000,
+          bytesPerSec: 500,
+          segmentsDone: 1,
+          segmentsTotal: 10,
+          percent: 10,
+          elapsedMs: 2000,
+          etaMs: 18000,
+        },
+      });
+      expect(coordinator.getTask(taskId)?.state).toBe('downloading');
+
+      // Simulate native companion disconnection
+      mockClient.simulateStatusChange({ connected: false });
+
+      const reconciledTask = coordinator.getTask(taskId);
+      expect(reconciledTask?.state).toBe('queued');
+      expect(reconciledTask?.progress.bytesPerSec).toBe(0);
+      expect(reconciledTask?.progress.etaMs).toBeUndefined();
+    });
+
+    it('reconciles active native tasks when production NativeClient disconnects', async () => {
+      const mockEnv = setupChromeMock();
+      const realClient = new NativeClient();
+      const port = mockEnv.getNativePort()!;
+      expect(port).toBeDefined();
+
+      const coordinator = new TaskCoordinator(realClient);
+      await coordinator.init();
+
+      const item = createTestMediaItem({
+        id: 'ms_real_disconnect_1',
+        title: 'Production Disconnect Test',
+        source: 'mediasite',
+        kind: 'hls',
+        url: 'https://example.com/master.m3u8',
+      });
+      await mediaStore.addMediaItem(item);
+
+      const { taskId } = await coordinator.startDownload({ itemId: item.id });
+      coordinator.handleNativeTaskUpdate({
+        id: taskId,
+        title: item.title,
+        state: 'downloading',
+        progress: {
+          bytesDownloaded: 5000,
+          bytesPerSec: 1000,
+          segmentsDone: 2,
+          segmentsTotal: 10,
+          percent: 20,
+          elapsedMs: 5000,
+        },
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      expect(coordinator.getTask(taskId)?.state).toBe('downloading');
+
+      // Simulate genuine native host port disconnect
+      port.simulateDisconnect('Native companion host process died');
+
+      const reconciledTask = coordinator.getTask(taskId);
+      expect(reconciledTask?.state).toBe('queued');
+      expect(reconciledTask?.progress.bytesPerSec).toBe(0);
+      expect(reconciledTask?.progress.etaMs).toBeUndefined();
+    });
+
+    it('reconstructs missing request and starts task on force-start', async () => {
+      const legacyTask: DownloadTask = {
+        id: 'legacy-task-1',
+        title: 'Legacy Video',
+        engine: 'native',
+        kind: 'hls',
+        sourceUrl: 'https://example.com/legacy.m3u8',
+        pageUrl: 'https://example.com/watch',
+        state: 'queued',
+        progress: emptyProgress(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await chrome.storage.local.set({ tasks: { 'legacy-task-1': legacyTask } });
+
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      mockClient.sentRequests = [];
+      await coordinator.handleTaskAction('legacy-task-1', 'force-start');
+      expect(coordinator.getTask('legacy-task-1')?.state).toBe('queued');
+      expect(coordinator.getTask('legacy-task-1')?.request).toBeDefined();
+      expect(mockClient.sentRequests.some((r) => r.type === 'download.start')).toBe(true);
+    });
+
+    it('reconstructs request and retries legacy failed task on retry action', async () => {
+      const legacyFailedTask: DownloadTask = {
+        id: 'legacy-failed-1',
+        title: 'Old Failed Lecture',
+        sourceUrl: 'https://example.com/failed.m3u8',
+        pageUrl: 'https://example.com/watch',
+        state: 'failed',
+        engine: 'native',
+        kind: 'hls',
+        progress: emptyProgress(),
+        createdAt: Date.now() - 100000,
+        updatedAt: Date.now() - 50000,
+      };
+      await chrome.storage.local.set({ tasks: { 'legacy-failed-1': legacyFailedTask } });
+
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      mockClient.sentRequests = [];
+      await coordinator.handleTaskAction('legacy-failed-1', 'retry');
+      expect(coordinator.getTask('legacy-failed-1')?.state).toBe('queued');
+      expect(coordinator.getTask('legacy-failed-1')?.request).toBeDefined();
+      expect(mockClient.sentRequests.some((r) => r.type === 'download.start')).toBe(true);
+    });
+
+    it('reconciles tasks correctly when stored.tasks is an Array', async () => {
+      const activeTaskInArray: DownloadTask = {
+        id: 'array-task-1',
+        title: 'Array Task',
+        sourceUrl: 'https://example.com/array.m3u8',
+        pageUrl: 'https://example.com/watch',
+        state: 'downloading',
+        engine: 'native',
+        kind: 'hls',
+        progress: emptyProgress(),
+        createdAt: Date.now() - 20000,
+        updatedAt: Date.now() - 10000,
+      };
+      await chrome.storage.local.set({ tasks: [activeTaskInArray] as unknown as Record<string, DownloadTask> });
+
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const task = coordinator.getTask('array-task-1');
+      expect(task).toBeDefined();
+      expect(task?.state).toBe('queued');
+    });
+
+    it('persists and updates dualStreamLayout in settings', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      expect((await coordinator.getSettings()).dualStreamLayout).toBe('side-by-side');
+
+      await coordinator.setSettings({ dualStreamLayout: 'pip' });
+      expect((await coordinator.getSettings()).dualStreamLayout).toBe('pip');
+
+      await coordinator.setSettings({ dualStreamLayout: 'separate' });
+      expect((await coordinator.getSettings()).dualStreamLayout).toBe('separate');
+    });
+
+    it('bundles multi-feed Mediasite presentation into single composite request in side-by-side layout', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_lecture_123';
+      const camItem = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Primary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Primary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const slideItem = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/slides.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const audioItem = createTestMediaItem({
+        id: `ms_${groupId}_2`,
+        tabId: 1,
+        url: 'https://example.com/mic.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Audio',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Audio',
+        hasVideo: false,
+        hasAudio: true,
+      });
+
+      await mediaStore.addMediaItem(camItem);
+      await mediaStore.addMediaItem(slideItem);
+      await mediaStore.addMediaItem(audioItem);
+
+      const { taskId } = await coordinator.startDownload({
+        itemId: camItem.id,
+        layout: 'side-by-side',
+      });
+
+      const task = coordinator.getTask(taskId);
+      expect(task).toBeDefined();
+      const req = task?.request;
+      expect(req).toBeDefined();
+      expect(req?.layout).toBe('side-by-side');
+      expect(req?.title).toBe('Algorithms 101');
+      // Should bundle camera, slides, and audio into tracks
+      expect(req?.tracks.length).toBe(3);
+      expect(req?.tracks[0]?.url).toBe('https://example.com/cam.m3u8');
+      expect(req?.tracks[1]?.url).toBe('https://example.com/slides.m3u8');
+      expect(req?.tracks[2]?.url).toBe('https://example.com/mic.m3u8');
+    });
+
+    it('ensures slides feed is primary canvas and camera is overlay inset in pip layout', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_pip_test';
+      const camItem = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Physics 200 - Presenter Camera',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Presenter Camera',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const slideItem = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/slides.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Physics 200 - Presentation Slides',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Presentation Slides',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      await mediaStore.addMediaItem(camItem);
+      await mediaStore.addMediaItem(slideItem);
+
+      const { taskId } = await coordinator.startDownload({
+        itemId: camItem.id,
+        layout: 'pip',
+      });
+
+      const task = coordinator.getTask(taskId);
+      const req = task?.request;
+      expect(req).toBeDefined();
+      expect(req?.layout).toBe('pip');
+      // Slides feed should be primary canvas (track 0), camera should be overlay inset (track 1)
+      expect(req?.tracks[0]?.url).toBe('https://example.com/slides.m3u8');
+      expect(req?.tracks[1]?.url).toBe('https://example.com/cam.m3u8');
+    });
+
+    it('ensures slides feed is primary canvas and camera is overlay inset in pip layout with default Mediasite labels', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_pip_default_labels';
+      // Default Mediasite labels produced by streamLabel()
+      const camItem = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Primary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Primary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const slideItem = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/slides.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video (stream 2, type 1)',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video (stream 2, type 1)',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      await mediaStore.addMediaItem(camItem);
+      await mediaStore.addMediaItem(slideItem);
+
+      const { taskId } = await coordinator.startDownload({
+        itemId: camItem.id,
+        layout: 'pip',
+      });
+
+      const task = coordinator.getTask(taskId);
+      const req = task?.request;
+      expect(req).toBeDefined();
+      expect(req?.layout).toBe('pip');
+      // Secondary video (slides, type 1) should be primary canvas (track 0), Primary video (camera) should be inset (track 1)
+      expect(req?.tracks[0]?.url).toBe('https://example.com/slides.m3u8');
+      expect(req?.tracks[1]?.url).toBe('https://example.com/cam.m3u8');
+    });
+
+    it('bundles 3 video feeds in PiP layout ensuring slides feed is selected for track 0 (primary canvas) over camera feeds', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_pip_3feeds';
+      const cam1 = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam1.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Primary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Primary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const cam2 = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/cam2.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video (stream 2, type 0)',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video (stream 2, type 0)',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const slides = createTestMediaItem({
+        id: `ms_${groupId}_2`,
+        tabId: 1,
+        url: 'https://example.com/slides3.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video (stream 3, type 1)',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video (stream 3, type 1)',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      await mediaStore.addMediaItem(cam1);
+      await mediaStore.addMediaItem(cam2);
+      await mediaStore.addMediaItem(slides);
+
+      const { taskId } = await coordinator.startDownload({
+        itemId: cam1.id,
+        layout: 'pip',
+      });
+
+      const task = coordinator.getTask(taskId);
+      const req = task?.request;
+      expect(req).toBeDefined();
+      expect(req?.layout).toBe('pip');
+      // Secondary video stream 3 (slides, type 1) must be track 0 (main canvas)
+      expect(req?.tracks[0]?.url).toBe('https://example.com/slides3.m3u8');
+    });
+
+    it('downloads separate streams as independent files when layout is separate', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_sep_test';
+      const camItem = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Biology 101 - Primary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Primary video',
+        hasVideo: true,
+        hasAudio: true,
+      });
+
+      const slideItem = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/slides.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Biology 101 - Secondary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      await mediaStore.addMediaItem(camItem);
+      await mediaStore.addMediaItem(slideItem);
+
+      mockClient.sentRequests = [];
+      await coordinator.startDownload({
+        itemId: camItem.id,
+        layout: 'separate',
+      });
+
+      // Should have queued 2 separate download tasks
+      const allTasks = coordinator.getTasks();
+      const groupTasks = allTasks.filter((t) => t.title.includes('Biology 101'));
+      expect(groupTasks.length).toBe(2);
+
+      const downloadStartRequests = mockClient.sentRequests.filter((r) => r.type === 'download.start');
+      expect(downloadStartRequests.length).toBe(2);
+    });
+
+    it('bundles 3 video feeds in Side-by-Side layout prioritizing camera and slides feeds over duplicate camera', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const groupId = 'group_sbs_3feeds';
+      const cam1 = createTestMediaItem({
+        id: `ms_${groupId}_0`,
+        tabId: 1,
+        url: 'https://example.com/cam1.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Primary video',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Primary video',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const cam2 = createTestMediaItem({
+        id: `ms_${groupId}_1`,
+        tabId: 1,
+        url: 'https://example.com/cam2.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video (stream 2, type 0)',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video (stream 2, type 0)',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      const slides = createTestMediaItem({
+        id: `ms_${groupId}_2`,
+        tabId: 1,
+        url: 'https://example.com/slides3.m3u8',
+        pageUrl: 'https://example.com/watch',
+        kind: 'hls',
+        title: 'Algorithms 101 - Secondary video (stream 3, type 1)',
+        source: 'mediasite',
+        groupId,
+        trackLabel: 'Secondary video (stream 3, type 1)',
+        hasVideo: true,
+        hasAudio: false,
+      });
+
+      await mediaStore.addMediaItem(cam1);
+      await mediaStore.addMediaItem(cam2);
+      await mediaStore.addMediaItem(slides);
+
+      const { taskId } = await coordinator.startDownload({
+        itemId: cam1.id,
+        layout: 'side-by-side',
+      });
+
+      const task = coordinator.getTask(taskId);
+      const req = task?.request;
+      expect(req).toBeDefined();
+      expect(req?.layout).toBe('side-by-side');
+      // Secondary video stream 3 (slides) must be present in tracks alongside camera
+      const trackUrls = req?.tracks.map((t) => t.url);
+      expect(trackUrls).toContain('https://example.com/slides3.m3u8');
+      expect(trackUrls).toContain('https://example.com/cam1.m3u8');
+    });
   });
 
   // =========================================================================
@@ -502,6 +1155,67 @@ describe('CHALLENGER Milestone 2: Empirical Stress Harness', () => {
       } finally {
         (globalThis as unknown as { chrome: { downloads?: unknown } }).chrome.downloads = originalDownloads;
       }
+    });
+
+    it('preserves genuine audio extension (.mp3) for direct audio downloads via Chrome engine instead of hardcoding .mp4', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+      await coordinator.setSettings({ directViaChrome: true });
+
+      const downloadSpy = vi.spyOn(chrome.downloads, 'download');
+
+      const item = createTestMediaItem({
+        id: 'direct-audio-mp3',
+        tabId: 1,
+        url: 'https://example.com/podcast_interview.mp3',
+        pageUrl: 'https://example.com/page',
+        kind: 'direct',
+        title: 'Podcast Episode 42',
+        mimeType: 'audio/mp3',
+        qualities: [{ id: 'q1', label: 'Original', ref: 'https://example.com/podcast_interview.mp3' }],
+      });
+      await mediaStore.addMediaItem(item);
+
+      await coordinator.startDownload({ itemId: 'direct-audio-mp3' });
+      expect(downloadSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          filename: expect.stringMatching(/\.mp3$/),
+        }),
+      );
+      downloadSpy.mockRestore();
+    });
+
+    it('sends download.remove to native companion when clearCompleted removes finished/failed/cancelled tasks', async () => {
+      const mockClient = new MockNativeClient();
+      const coordinator = new TaskCoordinator(
+        mockClient as unknown as import('../src/background/native_client.ts').NativeClient,
+      );
+      await coordinator.init();
+
+      const item = createTestMediaItem({
+        id: 'item-to-clear',
+        tabId: 1,
+        url: 'https://example.com/video.m3u8',
+        pageUrl: 'https://example.com/page',
+        kind: 'hls',
+        title: 'Finished Task',
+      });
+      await mediaStore.addMediaItem(item);
+      const { taskId } = await coordinator.startDownload({ itemId: 'item-to-clear' });
+
+      mockClient.simulateTaskUpdate({ id: taskId, state: 'downloading', progress: emptyProgress() });
+      mockClient.simulateTaskUpdate({ id: taskId, state: 'completed', progress: emptyProgress() });
+
+      mockClient.sentRequests = [];
+      await coordinator.clearCompleted();
+
+      const removeReq = mockClient.sentRequests.find(
+        (r) => r.type === 'download.remove' && (r as { taskId?: string }).taskId === taskId,
+      );
+      expect(removeReq).toBeDefined();
     });
   });
 

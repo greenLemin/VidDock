@@ -207,6 +207,8 @@
   transition: all 0.15s ease;
   font-family: var(--font-sans);
   text-align: center;
+  white-space: nowrap;
+  user-select: none;
 }
 
 .segment-btn:hover {

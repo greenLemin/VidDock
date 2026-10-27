@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { parseHls, parseMpd, pickQuality, sortQualities } from '@viddock/shared';
+import { isAudioUrlOrMime, parseHls, parseMpd, pickQuality, sortQualities } from '@viddock/shared';
 import type { DashRepresentation, HlsMedia, NativeTrack } from '@viddock/shared';
 import { HttpClient, HttpError } from './http.ts';
 import type { RangeSpec } from './http.ts';
@@ -34,6 +34,7 @@ export interface StreamPlan {
   /** When true, parts[0].dest is already the assembled file. */
   direct?: boolean;
   durationSec?: number;
+  label?: string;
 }
 
 export interface TrackPlan {
@@ -102,7 +103,7 @@ async function planHlsMedia(url: string, kind: StreamPlan['kind'], id: string, c
     });
   }
   const firstUrl = pl.segments[0]?.url ?? '';
-  const ext = hasMap ? 'mp4' : /\.(aac|mp3)(\?|$)/i.test(firstUrl) ? mediaTypeExt(firstUrl, 'aac') : 'ts';
+  const ext = hasMap ? 'mp4' : /\.(aac|mp3|m4a|ac3|eac3)(\?|$)/i.test(firstUrl) ? mediaTypeExt(firstUrl, 'aac') : 'ts';
   return { id, kind, file: path.join(dir, `stream.${ext}`), parts, durationSec: pl.totalDuration };
 }
 
@@ -116,7 +117,9 @@ async function planHls(track: Extract<NativeTrack, { type: 'hls' }>, ctx: PlanCo
   const { text, finalUrl } = await ctx.client.getText(track.url, ctx.signal);
   const pl = parseHls(text, finalUrl);
   if (pl.type === 'media') {
-    const s = await planHlsMedia(track.url, 'muxed', 'main', ctx);
+    const isAudio = /audio|mic|sound/i.test(track.label || '') || isAudioUrlOrMime(undefined, track.url);
+    const s = await planHlsMedia(track.url, isAudio ? 'audio' : 'muxed', isAudio ? 'audio' : 'main', ctx);
+    s.label = track.label;
     return { label: track.label, streams: [s], durationSec: s.durationSec };
   }
   if (pl.drm) throw new UserFacingError(`${pl.drm}. VidDock does not bypass DRM.`, 'DRM');
@@ -125,9 +128,19 @@ async function planHls(track: Extract<NativeTrack, { type: 'hls' }>, ctx: PlanCo
     if (track.variantUrl) {
       // Variant URL not listed (e.g. token changed): trust it but derive nothing.
       const s = await planHlsMedia(track.variantUrl, 'muxed', 'main', ctx);
+      s.label = track.label;
       const streams = [s];
-      if (track.audioUrl) streams.push(await planHlsMedia(track.audioUrl, 'audio', 'audio', ctx));
-      streams[0]!.kind = track.audioUrl ? 'video' : 'muxed';
+      let audioUrl = track.audioUrl;
+      if (!audioUrl && pl.audio && pl.audio.length > 0) {
+        const withUri = pl.audio.filter((a) => a.uri);
+        audioUrl = (withUri.find((a) => a.isDefault) ?? withUri.find((a) => a.autoselect) ?? withUri[0])?.uri;
+      }
+      if (audioUrl) {
+        const audioPlan = await planHlsMedia(audioUrl, 'audio', 'audio', ctx);
+        audioPlan.label = 'Audio';
+        streams.push(audioPlan);
+      }
+      streams[0]!.kind = audioUrl ? 'video' : 'muxed';
       return { label: track.label, streams, durationSec: s.durationSec };
     }
     const best = pickQuality(
@@ -140,11 +153,20 @@ async function planHls(track: Extract<NativeTrack, { type: 'hls' }>, ctx: PlanCo
   let audioUrl = track.audioUrl;
   if (!audioUrl && variant.audioGroup) {
     const group = pl.audio.filter((a) => a.groupId === variant?.audioGroup && a.uri);
-    audioUrl = (group.find((a) => a.isDefault) ?? group[0])?.uri;
+    audioUrl = (group.find((a) => a.isDefault) ?? group.find((a) => a.autoselect) ?? group[0])?.uri;
+  }
+  if (!audioUrl && pl.audio && pl.audio.length > 0) {
+    const withUri = pl.audio.filter((a) => a.uri);
+    audioUrl = (withUri.find((a) => a.isDefault) ?? withUri.find((a) => a.autoselect) ?? withUri[0])?.uri;
   }
   const video = await planHlsMedia(variant.url, audioUrl ? 'video' : 'muxed', 'main', ctx);
+  video.label = track.label;
   const streams: StreamPlan[] = [video];
-  if (audioUrl) streams.push(await planHlsMedia(audioUrl, 'audio', 'audio', ctx));
+  if (audioUrl) {
+    const audioPlan = await planHlsMedia(audioUrl, 'audio', 'audio', ctx);
+    audioPlan.label = 'Audio';
+    streams.push(audioPlan);
+  }
   return { label: track.label, streams, durationSec: video.durationSec };
 }
 
@@ -155,12 +177,18 @@ function parseRange(r: string | undefined): RangeSpec | undefined {
   return { offset: a, length: Number(m[2]) - a + 1 };
 }
 
-function dashStream(rep: DashRepresentation, kind: 'video' | 'audio', id: string, ctx: PlanContext): StreamPlan {
+function dashStream(
+  rep: DashRepresentation,
+  kind: 'video' | 'audio',
+  id: string,
+  ctx: PlanContext,
+  label?: string,
+): StreamPlan {
   const dir = path.join(ctx.workDir, `t${ctx.trackIndex}`, id);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'stream.mp4');
   if (rep.singleFile) {
-    return { id, kind, file, direct: true, parts: [{ url: rep.singleFile, dest: file, resume: true }] };
+    return { id, kind, file, direct: true, label, parts: [{ url: rep.singleFile, dest: file, resume: true }] };
   }
   const parts: Part[] = [];
   let idx = 0;
@@ -170,7 +198,7 @@ function dashStream(rep: DashRepresentation, kind: 'video' | 'audio', id: string
     parts.push({ url: s.url, range: parseRange(s.range), dest: path.join(dir, `${pad(idx++)}.seg`) });
   }
   if (rep.segments.length === 0) throw new UserFacingError(`Representation ${rep.id} has no segments`, 'BAD_MANIFEST');
-  return { id, kind, file, parts, durationSec: rep.segments.reduce((s, x) => s + x.duration, 0) };
+  return { id, kind, file, label, parts, durationSec: rep.segments.reduce((s, x) => s + x.duration, 0) };
 }
 
 async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: PlanContext): Promise<TrackPlan> {
@@ -205,21 +233,32 @@ async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: Plan
     audio = [...audioReps].sort((a, b) => b.bandwidth - a.bandwidth)[0];
   }
   if (!video && !audio) throw new UserFacingError('Manifest has no downloadable representations', 'BAD_MANIFEST');
-  if (video) streams.push(dashStream(video, 'video', 'video', ctx));
-  if (audio) streams.push(dashStream(audio, 'audio', 'audio', ctx));
+  if (video) streams.push(dashStream(video, 'video', 'video', ctx, track.label));
+  if (audio) streams.push(dashStream(audio, 'audio', 'audio', ctx, track.label || 'Audio'));
   return { label: track.label, streams, durationSec: mpd.durationSec || streams[0]?.durationSec };
 }
 
 function planDirect(track: Extract<NativeTrack, { type: 'direct' }>, ctx: PlanContext): TrackPlan {
   const ext = mediaTypeExt(track.url, 'mp4');
   const safeExt = /^(mp4|m4v|mov|webm|mkv|ogv|mp3|m4a|aac|ogg|oga|opus|flac|wav)$/.test(ext) ? ext : 'mp4';
+  const isAudioExt = /^(mp3|m4a|aac|ogg|oga|opus|flac|wav)$/.test(safeExt);
+  const isAudio = isAudioExt || /audio|mic|sound/i.test(track.label || '');
   const dir = path.join(ctx.workDir, `t${ctx.trackIndex}`);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `direct.${safeExt}`);
   return {
     label: track.label,
     originalExt: safeExt,
-    streams: [{ id: 'main', kind: 'muxed', file, direct: true, parts: [{ url: track.url, dest: file, resume: true }] }],
+    streams: [
+      {
+        id: 'main',
+        kind: isAudio ? 'audio' : 'muxed',
+        file,
+        direct: true,
+        label: track.label,
+        parts: [{ url: track.url, dest: file, resume: true }],
+      },
+    ],
   };
 }
 

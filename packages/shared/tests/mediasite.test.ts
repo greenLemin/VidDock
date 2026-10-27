@@ -213,4 +213,136 @@ describe('mediasite slide parsing (parsePlayerOptions)', () => {
     expect(res?.presenters).toEqual(['Jane Doe', 'Dr. Smith']);
     expect(res?.captions).toEqual([{ url: 'https://example.com/captions.vtt', language: 'en', label: 'English CC' }]);
   });
+
+  it('extracts decoupled audio streams from StreamType 2 and AudioUrls', () => {
+    const json = {
+      Presentation: {
+        Title: 'Lecture with Decoupled Audio',
+        Streams: [
+          {
+            StreamType: 0,
+            VideoUrls: [{ Location: 'https://example.com/cam.mp4', MimeType: 'video/mp4' }],
+          },
+          {
+            StreamType: 1,
+            VideoUrls: [{ Location: 'https://example.com/slides.mp4', MimeType: 'video/mp4' }],
+          },
+          {
+            StreamType: 2,
+            AudioUrls: [{ Location: 'https://example.com/mic.m4a', MimeType: 'audio/mp4' }],
+          },
+        ],
+      },
+    };
+
+    const res = parsePlayerOptions(json);
+    expect(res).toBeDefined();
+    expect(res?.streams).toHaveLength(3);
+    const audioStream = res?.streams.find((s) => s.streamType === 2);
+    expect(audioStream).toBeDefined();
+    expect(audioStream?.label).toBe('Audio');
+    expect(audioStream?.urls[0]?.url).toBe('https://example.com/mic.m4a');
+  });
+
+  it('extracts decoupled audio from Presentation.AudioUrls', () => {
+    const json = {
+      Presentation: {
+        Title: 'Presentation AudioUrls',
+        Streams: [
+          {
+            StreamType: 0,
+            VideoUrls: [{ Location: 'https://example.com/cam.mp4', MimeType: 'video/mp4' }],
+          },
+        ],
+        AudioUrls: [{ Location: 'https://example.com/audio.aac', MimeType: 'audio/aac' }],
+      },
+    };
+
+    const res = parsePlayerOptions(json);
+    expect(res).toBeDefined();
+    expect(res?.streams).toHaveLength(2);
+    const audioStream = res?.streams.find((s) => s.streamType === 2);
+    expect(audioStream).toBeDefined();
+    expect(audioStream?.label).toBe('Audio');
+    expect(audioStream?.urls[0]?.url).toBe('https://example.com/audio.aac');
+  });
+
+  it('extracts decoupled audio from singular Presentation.AudioUrl', () => {
+    const json = {
+      Presentation: {
+        Title: 'Singular AudioUrl Presentation',
+        Streams: [
+          {
+            StreamType: 0,
+            VideoUrls: [{ Location: 'https://example.com/cam.mp4', MimeType: 'video/mp4' }],
+          },
+        ],
+        AudioUrl: { Location: 'https://example.com/audio_singular.m4a' },
+      },
+    };
+
+    const res = parsePlayerOptions(json);
+    expect(res).toBeDefined();
+    expect(res?.streams).toHaveLength(2);
+    const audioStream = res?.streams.find((s) => s.streamType === 2);
+    expect(audioStream).toBeDefined();
+    expect(audioStream?.label).toBe('Audio');
+    expect(audioStream?.urls[0]?.url).toBe('https://example.com/audio_singular.m4a');
+    expect(audioStream?.urls[0]?.kind).toBe('direct');
+  });
+
+  it('kindFromMime correctly identifies direct audio formats without mime type', () => {
+    expect(kindFromMime('', 'https://example.com/track.m4a')).toBe('direct');
+    expect(kindFromMime('', 'https://example.com/track.aac')).toBe('direct');
+    expect(kindFromMime('', 'https://example.com/track.mp3')).toBe('direct');
+    expect(kindFromMime('', 'https://example.com/track.flac')).toBe('direct');
+  });
+
+  it('identifies audio stream from AudioUrls with empty mimeType and defaults mime to audio/mp4', () => {
+    const json = {
+      Presentation: {
+        Title: 'Missing MIME audio',
+        Streams: [
+          {
+            StreamType: 0,
+            VideoUrls: [{ Location: 'https://example.com/cam.mp4', MimeType: 'video/mp4' }],
+          },
+          {
+            AudioUrls: [{ Location: 'https://example.com/mic_nomime.m4a' }],
+          },
+        ],
+      },
+    };
+
+    const res = parsePlayerOptions(json);
+    expect(res).toBeDefined();
+    expect(res?.streams).toHaveLength(2);
+    const audioStream = res?.streams.find((s) => s.streamType === 2);
+    expect(audioStream).toBeDefined();
+    expect(audioStream?.label).toBe('Audio');
+    expect(audioStream?.urls[0]?.mimeType).toBe('audio/mp4');
+  });
+
+  it('identifies audio stream from stream with audio extension when StreamType is omitted', () => {
+    const json = {
+      Presentation: {
+        Title: 'Audio extension only',
+        Streams: [
+          {
+            VideoUrls: [{ Location: 'https://example.com/cam.mp4', MimeType: 'video/mp4' }],
+          },
+          {
+            VideoUrls: [{ Location: 'https://example.com/lecture_mic.mp3' }],
+          },
+        ],
+      },
+    };
+
+    const res = parsePlayerOptions(json);
+    expect(res).toBeDefined();
+    expect(res?.streams).toHaveLength(2);
+    const audioStream = res?.streams.find((s) => s.streamType === 2);
+    expect(audioStream).toBeDefined();
+    expect(audioStream?.label).toBe('Audio');
+  });
 });

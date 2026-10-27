@@ -30,7 +30,7 @@ export type BgRequest =
   | {
       type: 'taskAction';
       taskId: string;
-      action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal';
+      action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' | 'start' | 'force-start';
     }
   | { type: 'clearCompleted' }
   | { type: 'getSettings' }

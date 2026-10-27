@@ -59,7 +59,9 @@ class DashboardController {
     document.getElementById('btn-clear-completed')?.addEventListener('click', async () => {
       try {
         await chrome.runtime.sendMessage({ type: 'clearCompleted' });
-        this.tasks = this.tasks.filter((t) => isActive(t.state) || t.state === 'queued');
+        this.tasks = this.tasks.filter(
+          (t) => t.state !== 'completed' && t.state !== 'cancelled' && t.state !== 'failed',
+        );
         this.render();
       } catch {}
     });
@@ -267,21 +269,43 @@ class DashboardController {
       }
 
       const btnRemove = document.createElement('button');
-      btnRemove.className = 'icon-button';
+      btnRemove.className = 'icon-button btn-remove';
       btnRemove.title = 'Remove from list';
+      btnRemove.setAttribute('aria-label', 'Remove from list');
+      btnRemove.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+      btnRemove.addEventListener('click', () => this.executeAction(task.id, 'remove'));
+      actions.appendChild(btnRemove);
+    } else if (task.state === 'queued') {
+      const btnStart = document.createElement('button');
+      btnStart.className = 'btn-primary btn-sm btn-start';
+      btnStart.textContent = 'Force Start';
+      btnStart.addEventListener('click', () => this.executeAction(task.id, 'force-start'));
+      actions.appendChild(btnStart);
+
+      const btnCancel = document.createElement('button');
+      btnCancel.className = 'btn-secondary btn-sm btn-cancel';
+      btnCancel.textContent = 'Cancel';
+      btnCancel.addEventListener('click', () => this.executeAction(task.id, 'cancel'));
+      actions.appendChild(btnCancel);
+
+      const btnRemove = document.createElement('button');
+      btnRemove.className = 'icon-button btn-remove';
+      btnRemove.title = 'Remove';
+      btnRemove.setAttribute('aria-label', 'Remove');
       btnRemove.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
       btnRemove.addEventListener('click', () => this.executeAction(task.id, 'remove'));
       actions.appendChild(btnRemove);
     } else if (task.state === 'failed' || task.state === 'cancelled') {
       const btnRetry = document.createElement('button');
-      btnRetry.className = 'btn-secondary btn-sm';
+      btnRetry.className = 'btn-secondary btn-sm btn-retry';
       btnRetry.textContent = 'Retry';
       btnRetry.addEventListener('click', () => this.executeAction(task.id, 'retry'));
       actions.appendChild(btnRetry);
 
       const btnRemove = document.createElement('button');
-      btnRemove.className = 'icon-button';
+      btnRemove.className = 'icon-button btn-remove';
       btnRemove.title = 'Remove';
+      btnRemove.setAttribute('aria-label', 'Remove');
       btnRemove.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
       btnRemove.addEventListener('click', () => this.executeAction(task.id, 'remove'));
       actions.appendChild(btnRemove);
@@ -335,7 +359,7 @@ class DashboardController {
 
   private async executeAction(
     taskId: string,
-    action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal',
+    action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' | 'force-start' | 'start',
   ): Promise<void> {
     try {
       await chrome.runtime.sendMessage({
