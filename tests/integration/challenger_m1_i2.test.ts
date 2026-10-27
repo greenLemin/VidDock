@@ -749,12 +749,13 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
     }
   });
 
-  it('captures fixed duration from sliding live HLS window (liveMode: "duration")', async () => {
+  it('captures fixed duration from sliding live HLS window across polling cycles (segmentConcurrency: 2)', async () => {
     if (!ffmpeg || !ffprobe) return;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-dur-'));
-    const liveDir = path.join(fixtureDir, 'live-dur');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-dur-c2-'));
+    const liveDir = path.join(fixtureDir, 'live-dur-c2');
     fs.mkdirSync(liveDir, { recursive: true });
 
+    let timer: NodeJS.Timeout | undefined;
     try {
       const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
       fs.copyFileSync(segSource, path.join(liveDir, 'seg0.ts'));
@@ -779,12 +780,12 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
 
       const job = new DownloadJob(
         {
-          taskId: 'task-live-dur',
-          title: 'Live Duration Test',
-          fileName: 'live_dur',
+          taskId: 'task-live-dur-c2',
+          title: 'Live Duration Test (conc: 2)',
+          fileName: 'live_dur_c2',
           outputDir: tmpDir,
           container: 'mp4',
-          tracks: [{ type: 'hls', url: `${server.url}/live-dur/index.m3u8` }],
+          tracks: [{ type: 'hls', url: `${server.url}/live-dur-c2/index.m3u8` }],
           subtitles: [],
           subtitleMode: 'none',
           headers: {},
@@ -793,7 +794,7 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
             maxRetries: 1,
             retryBaseMs: 10,
             liveMode: 'duration',
-            liveDurationSeconds: 2,
+            liveDurationSeconds: 4,
           },
         },
         {
@@ -802,22 +803,52 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
         },
       );
 
-      await job.run();
+      const runPromise = job.run();
+
+      // At 50ms, sliding window advances, adding seg2 and seg3 to satisfy the 4.0s duration limit
+      timer = setTimeout(() => {
+        try {
+          fs.writeFileSync(
+            playlistPath,
+            [
+              '#EXTM3U',
+              '#EXT-X-VERSION:3',
+              '#EXT-X-TARGETDURATION:0.2',
+              '#EXT-X-MEDIA-SEQUENCE:1',
+              '#EXTINF:1.0,',
+              'seg1.ts',
+              '#EXTINF:1.0,',
+              'seg2.ts',
+              '#EXTINF:1.0,',
+              'seg3.ts',
+            ].join('\n') + '\n',
+          );
+        } catch {
+          // ignore if cleaned up
+        }
+      }, 50);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+
       expect(job.state).toBe('completed');
       expect(fs.existsSync(job.info.outputPath!)).toBe(true);
 
       const pr = await probe(ffprobe, job.info.outputPath!);
       expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+      const dur = parseFloat(pr.format.duration || '0');
+      expect(dur).toBeGreaterThanOrEqual(3.5);
     } finally {
+      if (timer) clearTimeout(timer);
       fs.rmSync(liveDir, { recursive: true, force: true });
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it('preserves partial capture when stopped via job.stop() (liveMode: "until_stopped")', async () => {
+  it('preserves partial capture when stopped via job.stop() (liveMode: "until_stopped", segmentConcurrency: 2)', async () => {
     if (!ffmpeg || !ffprobe) return;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-stop-'));
-    const liveDir = path.join(fixtureDir, 'live-stop');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-stop-c2-'));
+    const liveDir = path.join(fixtureDir, 'live-stop-c2');
     fs.mkdirSync(liveDir, { recursive: true });
 
     let timer: NodeJS.Timeout | undefined;
@@ -843,17 +874,17 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
 
       const job = new DownloadJob(
         {
-          taskId: 'task-live-stop',
-          title: 'Live Stop Test',
-          fileName: 'live_stop',
+          taskId: 'task-live-stop-c2',
+          title: 'Live Stop Test (conc: 2)',
+          fileName: 'live_stop_c2',
           outputDir: tmpDir,
           container: 'mp4',
-          tracks: [{ type: 'hls', url: `${server.url}/live-stop/index.m3u8` }],
+          tracks: [{ type: 'hls', url: `${server.url}/live-stop-c2/index.m3u8` }],
           subtitles: [],
           subtitleMode: 'none',
           headers: {},
           options: {
-            segmentConcurrency: 1,
+            segmentConcurrency: 2,
             maxRetries: 1,
             retryBaseMs: 10,
             liveMode: 'until_stopped',
@@ -885,10 +916,10 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
     }
   });
 
-  it('preserves partial capture on cancellation (job.abort("cancel")) per Mandatory Decision 3', async () => {
+  it('preserves partial capture on cancellation (job.abort("cancel")) per Mandatory Decision 3 (segmentConcurrency: 2)', async () => {
     if (!ffmpeg || !ffprobe) return;
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-cancel-'));
-    const liveDir = path.join(fixtureDir, 'live-cancel');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-cancel-c2-'));
+    const liveDir = path.join(fixtureDir, 'live-cancel-c2');
     fs.mkdirSync(liveDir, { recursive: true });
 
     let timer: NodeJS.Timeout | undefined;
@@ -914,17 +945,17 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
 
       const job = new DownloadJob(
         {
-          taskId: 'task-live-cancel',
-          title: 'Live Cancel Test',
-          fileName: 'live_cancel',
+          taskId: 'task-live-cancel-c2',
+          title: 'Live Cancel Test (conc: 2)',
+          fileName: 'live_cancel_c2',
           outputDir: tmpDir,
           container: 'mp4',
-          tracks: [{ type: 'hls', url: `${server.url}/live-cancel/index.m3u8` }],
+          tracks: [{ type: 'hls', url: `${server.url}/live-cancel-c2/index.m3u8` }],
           subtitles: [],
           subtitleMode: 'none',
           headers: {},
           options: {
-            segmentConcurrency: 1,
+            segmentConcurrency: 2,
             maxRetries: 1,
             retryBaseMs: 10,
             liveMode: 'until_stopped',
@@ -949,6 +980,148 @@ describe('TASK-P1-01 & TASK-P2-03: Multi-Period DASH & Rolling Live Stream Recor
 
       const pr = await probe(ffprobe, job.info.outputPath!);
       expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves partial capture when stopped via job.stop() under default high concurrency (segmentConcurrency: 6)', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-stop-c6-'));
+    const liveDir = path.join(fixtureDir, 'live-stop-c6');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      for (let i = 0; i < 6; i++) {
+        fs.copyFileSync(segSource, path.join(liveDir, `seg${i}.ts`));
+      }
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:0.2', '#EXT-X-MEDIA-SEQUENCE:0'];
+      for (let i = 0; i < 6; i++) {
+        lines.push('#EXTINF:0.5,', `seg${i}.ts`);
+      }
+      fs.writeFileSync(playlistPath, lines.join('\n') + '\n');
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-stop-c6',
+          title: 'Live Stop Test (conc: 6)',
+          fileName: 'live_stop_c6',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-stop-c6/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 6,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'until_stopped',
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      const runPromise = job.run();
+      timer = setTimeout(() => {
+        job.stop();
+      }, 150);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+      expect(job.info.warnings?.some((w) => w.includes('Recording stopped; partial capture preserved'))).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+    } finally {
+      if (timer) clearTimeout(timer);
+      fs.rmSync(liveDir, { recursive: true, force: true });
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('captures fixed duration across sliding live window under default high concurrency (segmentConcurrency: 6)', async () => {
+    if (!ffmpeg || !ffprobe) return;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-live-dur-c6-'));
+    const liveDir = path.join(fixtureDir, 'live-dur-c6');
+    fs.mkdirSync(liveDir, { recursive: true });
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const segSource = path.join(fixtureDir, 'hls/v120/seg000.ts');
+      for (let i = 0; i < 8; i++) {
+        fs.copyFileSync(segSource, path.join(liveDir, `seg${i}.ts`));
+      }
+
+      const playlistPath = path.join(liveDir, 'index.m3u8');
+      const lines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:0.2', '#EXT-X-MEDIA-SEQUENCE:0'];
+      // Initial window has 6 segments of 0.5s = 3.0s total duration
+      for (let i = 0; i < 6; i++) {
+        lines.push('#EXTINF:0.5,', `seg${i}.ts`);
+      }
+      fs.writeFileSync(playlistPath, lines.join('\n') + '\n');
+
+      const job = new DownloadJob(
+        {
+          taskId: 'task-live-dur-c6',
+          title: 'Live Duration Test (conc: 6)',
+          fileName: 'live_dur_c6',
+          outputDir: tmpDir,
+          container: 'mp4',
+          tracks: [{ type: 'hls', url: `${server.url}/live-dur-c6/index.m3u8` }],
+          subtitles: [],
+          subtitleMode: 'none',
+          headers: {},
+          options: {
+            segmentConcurrency: 6,
+            maxRetries: 1,
+            retryBaseMs: 10,
+            liveMode: 'duration',
+            liveDurationSeconds: 4,
+          },
+        },
+        {
+          workRoot: path.join(tmpDir, 'work'),
+          onUpdate: () => {},
+        },
+      );
+
+      const runPromise = job.run();
+
+      // At 50ms, playlist updates to slide window, adding seg6 and seg7 (total duration reaching 4.0s)
+      timer = setTimeout(() => {
+        try {
+          const updateLines = ['#EXTM3U', '#EXT-X-VERSION:3', '#EXT-X-TARGETDURATION:0.2', '#EXT-X-MEDIA-SEQUENCE:2'];
+          for (let i = 2; i < 8; i++) {
+            updateLines.push('#EXTINF:0.5,', `seg${i}.ts`);
+          }
+          fs.writeFileSync(playlistPath, updateLines.join('\n') + '\n');
+        } catch {
+          // ignore if cleaned up
+        }
+      }, 50);
+
+      await runPromise;
+      if (timer) clearTimeout(timer);
+
+      expect(job.state).toBe('completed');
+      expect(fs.existsSync(job.info.outputPath!)).toBe(true);
+
+      const pr = await probe(ffprobe, job.info.outputPath!);
+      expect(pr.streams.some((s) => s.codec_type === 'video')).toBe(true);
+      const dur = parseFloat(pr.format.duration || '0');
+      expect(dur).toBeGreaterThanOrEqual(3.5);
     } finally {
       if (timer) clearTimeout(timer);
       fs.rmSync(liveDir, { recursive: true, force: true });

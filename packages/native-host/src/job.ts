@@ -455,7 +455,7 @@ export class DownloadJob {
   private async downloadLiveStream(streams: StreamPlan[], client: HttpClient, signal: AbortSignal): Promise<void> {
     const conc = this.req.options.segmentConcurrency;
     const toleranceRate = this.req.options.segmentToleranceRate ?? 0.02;
-    const targetDurationSec = Math.max(1, streams[0]?.targetDuration ?? 2);
+    const targetDurationSec = Math.max(0.2, streams[0]?.targetDuration ?? 2);
     const liveMode = this.req.options.liveMode ?? 'dvr';
     const liveDurationLimit = this.req.options.liveDurationSeconds;
 
@@ -479,14 +479,14 @@ export class DownloadJob {
     const onSignalAbort = () => pollController.abort();
     signal.addEventListener('abort', onSignalAbort, { once: true });
 
-    let wakeWorker: (() => void) | null = null;
+    const waitingWorkers = new Set<() => void>();
     const notifyWorkers = () => {
-      if (wakeWorker) {
-        const cb = wakeWorker;
-        wakeWorker = null;
+      for (const cb of waitingWorkers) {
         cb();
       }
+      waitingWorkers.clear();
     };
+    pollController.signal.addEventListener('abort', notifyWorkers, { once: true });
 
     const poller = async () => {
       while (!pollController.signal.aborted && !this.stopped && !pollingEnded) {
@@ -578,7 +578,7 @@ export class DownloadJob {
     let workerFailure: unknown;
 
     const worker = async () => {
-      while (!signal.aborted && !this.stopped) {
+      while (!signal.aborted && !this.stopped && workerFailure === undefined) {
         if (nextQueueIdx < queue.length) {
           const item = queue[nextQueueIdx++];
           if (!item) continue;
@@ -627,27 +627,41 @@ export class DownloadJob {
               }
             }
             pollController.abort();
+            notifyWorkers();
             return;
           }
-        } else if (pollingEnded) {
+        } else if (pollingEnded || pollController.signal.aborted) {
           return;
         } else {
           await new Promise<void>((res) => {
-            wakeWorker = res;
-            if (pollingEnded || nextQueueIdx < queue.length || signal.aborted || this.stopped) res();
+            waitingWorkers.add(res);
+            if (
+              pollingEnded ||
+              pollController.signal.aborted ||
+              nextQueueIdx < queue.length ||
+              signal.aborted ||
+              this.stopped ||
+              workerFailure !== undefined
+            ) {
+              waitingWorkers.delete(res);
+              res();
+            }
           });
         }
       }
     };
 
     const pollerPromise = poller();
-    const workers = Promise.all(Array.from({ length: Math.min(conc, Math.max(1, queue.length || 1)) }, worker));
+    const workers = Promise.all(Array.from({ length: Math.max(1, conc || 1) }, worker));
 
-    await Promise.race([workers, pollerPromise.then(() => workers)]);
-    pollController.abort();
-    signal.removeEventListener('abort', onSignalAbort);
-    notifyWorkers();
-    await Promise.allSettled([pollerPromise, workers]);
+    try {
+      await Promise.race([workers, pollerPromise.then(() => workers)]);
+    } finally {
+      pollController.abort();
+      signal.removeEventListener('abort', onSignalAbort);
+      notifyWorkers();
+      await Promise.allSettled([pollerPromise, workers]);
+    }
 
     if (workerFailure !== undefined && !this.stopped && !signal.aborted) {
       throw workerFailure;
