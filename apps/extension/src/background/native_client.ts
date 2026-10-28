@@ -88,6 +88,10 @@ export class NativeClient {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    for (const [id, req] of this.pendingRequests.entries()) {
+      clearTimeout(req.timer);
+      this.pendingRequests.delete(id);
+    }
     if (this.port) {
       try {
         this.port.disconnect();

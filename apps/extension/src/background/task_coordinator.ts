@@ -34,6 +34,7 @@ export class TaskCoordinator {
         for (const task of this.tasks.values()) {
           if (task.engine === 'native' && isActive(task.state)) {
             task.state = 'queued';
+            task.interrupted = true;
             if (task.progress) {
               task.progress.bytesPerSec = 0;
               task.progress.etaMs = undefined;
@@ -47,6 +48,8 @@ export class TaskCoordinator {
           this.persistTasks().catch(() => {});
           this.syncActiveBadges();
         }
+      } else {
+        this.resumeQueuedTasks().catch(() => {});
       }
     });
   }
@@ -73,6 +76,7 @@ export class TaskCoordinator {
           if (!task.id) task.id = taskId;
           if (isActive(task.state)) {
             task.state = 'queued';
+            task.interrupted = true;
             if (task.progress) {
               task.progress.bytesPerSec = 0;
               task.progress.etaMs = undefined;
@@ -701,6 +705,41 @@ export class TaskCoordinator {
     }
   }
 
+  async resumeQueuedTasks(): Promise<void> {
+    await this.init();
+    if (!this.client.getStatus().connected) return;
+
+    let changed = false;
+    for (const task of this.tasks.values()) {
+      if (task.engine === 'native' && task.state === 'queued' && (task.interrupted || task.request)) {
+        task.interrupted = false;
+        task.updatedAt = Date.now();
+        changed = true;
+        this.broadcastTaskUpdate(task);
+
+        if (task.request) {
+          this.client
+            .sendRequest({
+              type: 'download.start',
+              request: task.request,
+            })
+            .catch((err: unknown) => {
+              task.state = 'failed';
+              task.error = err instanceof Error ? err.message : String(err);
+              task.updatedAt = Date.now();
+              this.persistTasks().catch(() => {});
+              this.broadcastTaskUpdate(task);
+              this.syncActiveBadges();
+            });
+        }
+      }
+    }
+    if (changed) {
+      await this.persistTasks();
+      this.syncActiveBadges();
+    }
+  }
+
   handleNativeTaskUpdate(info: TaskInfo): void {
     const existing = this.tasks.get(info.id);
     if (!existing) return;
@@ -714,6 +753,9 @@ export class TaskCoordinator {
       existing.error = info.error;
       existing.errorCode = info.errorCode;
       existing.updatedAt = Date.now();
+      if (isActive(info.state)) {
+        existing.interrupted = false;
+      }
 
       this.persistTasks();
       this.broadcastTaskUpdate(existing);

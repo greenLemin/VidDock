@@ -310,6 +310,7 @@ describe('Milestone 2 Challenger Empirical Test Suite', () => {
       const status = client.getStatus();
       expect(status.connected).toBe(false);
       expect(status.error).toContain('crashed');
+      client.disconnect();
     });
 
     it('applies exponential backoff with jitter on reconnect attempts', async () => {
@@ -353,6 +354,7 @@ describe('Milestone 2 Challenger Empirical Test Suite', () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(client.getStatus().connected).toBe(true);
+      client.disconnect();
     });
 
     it('enforces request timeout for unresponsive host requests', async () => {
@@ -423,6 +425,7 @@ describe('Milestone 2 Challenger Empirical Test Suite', () => {
 
       unsubscribe();
       expect(observedStatuses).toEqual([true, false]);
+      client.disconnect();
     });
   });
 

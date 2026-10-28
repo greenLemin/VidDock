@@ -13,7 +13,24 @@ function initColorTheme(): void {
 }
 initColorTheme();
 
-class DashboardController {
+export function getHumanReadableErrorMessage(errorCode?: string, fallbackError?: string): string {
+  switch (errorCode) {
+    case 'NO_FFMPEG':
+      return fallbackError || 'FFmpeg is required for muxing but was not found.';
+    case 'HTTP_401':
+      return fallbackError || 'Authentication required (HTTP 401). Session may have expired.';
+    case 'HTTP_403':
+      return fallbackError || 'Access forbidden (HTTP 403). Session may have expired.';
+    case 'SEGMENT_MISSING':
+      return fallbackError || 'Stream segment(s) could not be retrieved.';
+    case 'DISK_FULL':
+      return fallbackError || 'Disk space is full.';
+    default:
+      return fallbackError || errorCode || 'An error occurred.';
+  }
+}
+
+export class DashboardController {
   private tasks: DownloadTask[] = [];
   private currentFilter: 'all' | 'active' | 'queued' | 'completed' | 'failed' = 'all';
   private searchQuery = '';
@@ -315,10 +332,55 @@ class DashboardController {
     card.appendChild(header);
 
     // Error banner if any
-    if (task.error) {
+    if (task.error || task.errorCode) {
       const errBanner = document.createElement('div');
       errBanner.className = 'task-error-banner';
-      errBanner.textContent = `Error: ${task.error}`;
+
+      const errText = document.createElement('div');
+      errText.className = 'task-error-text';
+      errText.textContent = `Error: ${getHumanReadableErrorMessage(task.errorCode, task.error)}`;
+      errBanner.appendChild(errText);
+
+      const code = task.errorCode;
+      if (code === 'NO_FFMPEG') {
+        const btnFfmpeg = document.createElement('button');
+        btnFfmpeg.className = 'btn-secondary btn-sm btn-error-action';
+        btnFfmpeg.textContent = 'Install FFmpeg';
+        btnFfmpeg.addEventListener('click', () => {
+          chrome.tabs.create({ url: chrome.runtime.getURL('settings/index.html#companion-help-box') });
+        });
+        errBanner.appendChild(btnFfmpeg);
+      } else if (code === 'HTTP_401' || code === 'HTTP_403') {
+        const btnReopen = document.createElement('button');
+        btnReopen.className = 'btn-secondary btn-sm btn-error-action';
+        btnReopen.textContent = 'Reopen Page to Refresh Session';
+        btnReopen.addEventListener('click', () => {
+          if (task.pageUrl) {
+            chrome.tabs.create({ url: task.pageUrl });
+          }
+        });
+        errBanner.appendChild(btnReopen);
+      } else if (code === 'SEGMENT_MISSING') {
+        const btnRetry = document.createElement('button');
+        btnRetry.className = 'btn-secondary btn-sm btn-error-action';
+        btnRetry.textContent = 'Retry Download';
+        btnRetry.addEventListener('click', () => {
+          this.executeAction(task.id, 'retry');
+        });
+        errBanner.appendChild(btnRetry);
+      } else if (code === 'DISK_FULL') {
+        const btnClean = document.createElement('button');
+        btnClean.className = 'btn-secondary btn-sm btn-error-action';
+        btnClean.textContent = 'Clean Work Cache';
+        btnClean.addEventListener('click', async () => {
+          try {
+            await chrome.runtime.sendMessage({ type: 'cacheClear' });
+          } catch {}
+          chrome.tabs.create({ url: chrome.runtime.getURL('settings/index.html#diagnostic-section') });
+        });
+        errBanner.appendChild(btnClean);
+      }
+
       card.appendChild(errBanner);
     }
 
@@ -371,7 +433,9 @@ class DashboardController {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
-  const controller = new DashboardController();
-  controller.init();
-});
+if (typeof document !== 'undefined') {
+  document.addEventListener('DOMContentLoaded', () => {
+    const controller = new DashboardController();
+    controller.init();
+  });
+}

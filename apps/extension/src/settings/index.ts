@@ -1,5 +1,5 @@
 import type { BgResponse, DualStreamLayout, NativeStatus, Settings } from '@viddock/shared';
-import { DEFAULT_SETTINGS, applyFilenameTemplate } from '@viddock/shared';
+import { DEFAULT_SETTINGS, applyFilenameTemplate, formatBytes } from '@viddock/shared';
 
 function initColorTheme(): void {
   try {
@@ -22,6 +22,7 @@ export class SettingsController {
     this.renderExtensionId();
     await this.loadSettings();
     await this.loadNativeStatus();
+    await this.loadCacheInfo();
   }
 
   private bindEvents(): void {
@@ -116,6 +117,46 @@ export class SettingsController {
       });
     });
 
+    // Clear Cache Button
+    const clearBtn = document.getElementById('btn-clear-cache') as HTMLButtonElement | null;
+    clearBtn?.addEventListener('click', async () => {
+      if (!clearBtn || clearBtn.disabled) return;
+      clearBtn.disabled = true;
+      const originalText = clearBtn.textContent || 'Clear Cache';
+      clearBtn.textContent = 'Clearing...';
+      try {
+        const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ removed: number; freedBytes: number }>>({
+          type: 'cacheClear',
+        });
+        if (res && res.ok) {
+          clearBtn.textContent = 'Cleared!';
+          await this.loadCacheInfo();
+          setTimeout(() => {
+            if (clearBtn) {
+              clearBtn.textContent = originalText;
+              clearBtn.disabled = !this.nativeStatus.connected;
+            }
+          }, 1500);
+        } else {
+          clearBtn.textContent = 'Error';
+          setTimeout(() => {
+            if (clearBtn) {
+              clearBtn.textContent = originalText;
+              clearBtn.disabled = !this.nativeStatus.connected;
+            }
+          }, 1500);
+        }
+      } catch {
+        clearBtn.textContent = 'Failed';
+        setTimeout(() => {
+          if (clearBtn) {
+            clearBtn.textContent = originalText;
+            clearBtn.disabled = !this.nativeStatus.connected;
+          }
+        }, 1500);
+      }
+    });
+
     // Test Companion Button
     document.getElementById('btn-test-companion')?.addEventListener('click', async () => {
       const btn = document.getElementById('btn-test-companion') as HTMLButtonElement;
@@ -126,6 +167,7 @@ export class SettingsController {
       try {
         await chrome.runtime.sendMessage({ type: 'diagnostics' });
         await this.loadNativeStatus();
+        await this.loadCacheInfo();
       } catch {
       } finally {
         if (btn) {
@@ -311,6 +353,39 @@ export class SettingsController {
     if (outputDirEl) outputDirEl.textContent = this.nativeStatus.defaultOutputDir || '~/Downloads';
     if (ffmpegEl) ffmpegEl.textContent = this.nativeStatus.ffmpeg || 'Not found';
     if (ffprobeEl) ffprobeEl.textContent = this.nativeStatus.ffprobe || 'Not found';
+
+    const clearBtn = document.getElementById('btn-clear-cache') as HTMLButtonElement | null;
+    if (this.nativeStatus.connected) {
+      if (clearBtn) clearBtn.disabled = false;
+      void this.loadCacheInfo();
+    } else {
+      const cacheSizeEl = document.getElementById('diag-cache-size');
+      if (cacheSizeEl) cacheSizeEl.textContent = '--';
+      if (clearBtn) clearBtn.disabled = true;
+    }
+  }
+
+  async loadCacheInfo(): Promise<void> {
+    const cacheSizeEl = document.getElementById('diag-cache-size');
+    const clearBtn = document.getElementById('btn-clear-cache') as HTMLButtonElement | null;
+    if (!this.nativeStatus.connected) {
+      if (cacheSizeEl) cacheSizeEl.textContent = '--';
+      if (clearBtn) clearBtn.disabled = true;
+      return;
+    }
+    try {
+      const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ bytes: number }>>({
+        type: 'cacheInfo',
+      });
+      if (res && res.ok && res.data) {
+        if (cacheSizeEl) cacheSizeEl.textContent = formatBytes(res.data.bytes);
+        if (clearBtn) clearBtn.disabled = false;
+      } else {
+        if (cacheSizeEl) cacheSizeEl.textContent = '--';
+      }
+    } catch {
+      if (cacheSizeEl) cacheSizeEl.textContent = '--';
+    }
   }
 }
 

@@ -105,6 +105,53 @@
           <div id="dock-progress-fill" class="progress-fill" style="width: 0%"></div>
         </div>
       </footer>
+
+      <!-- First-Run Onboarding Modal -->
+      <div id="onboarding-modal" class="onboarding-overlay hidden">
+        <div class="onboarding-card">
+          <div class="onboarding-header">
+            <div class="brand-icon">
+              <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+                <rect width="32" height="32" rx="8" fill="url(#ob-logo-grad)" />
+                <path d="M11 10L23 16L11 22V10Z" fill="white" />
+                <path d="M9 25H23V27H9V25Z" fill="white" opacity="0.8" />
+                <defs>
+                  <linearGradient id="ob-logo-grad" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#0071e3" />
+                    <stop offset="1" stop-color="#5856d6" />
+                  </linearGradient>
+                </defs>
+              </svg>
+            </div>
+            <h2 class="onboarding-title">Welcome to VidDock</h2>
+            <p class="onboarding-subtitle">Fast, private video downloading with lossless local remuxing.</p>
+          </div>
+          <div class="onboarding-features">
+            <div class="feature-item">
+              <span class="feature-bullet">1</span>
+              <div class="feature-desc">
+                <strong>Auto-Detect Streams</strong>: Plays video on any page to detect HLS, DASH, direct MP4, and
+                Mediasite lectures.
+              </div>
+            </div>
+            <div class="feature-item">
+              <span class="feature-bullet">2</span>
+              <div class="feature-desc">
+                <strong>Native Companion</strong>: Runs locally on your machine for multi-part downloads and dual-stream
+                remuxing.
+              </div>
+            </div>
+            <div class="feature-item">
+              <span class="feature-bullet">3</span>
+              <div class="feature-desc">
+                <strong>Privacy First</strong>: No cloud servers, no user tracking, and credentials never leave your
+                browser.
+              </div>
+            </div>
+          </div>
+          <button id="btn-onboarding-dismiss" class="btn-primary onboarding-btn">Get Started</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="index.js"></script>

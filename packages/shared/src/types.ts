@@ -166,6 +166,8 @@ export interface DownloadTask extends TaskInfo {
   chromeDownloadId?: number;
   /** Request stored for resume/retry (never includes credentials). */
   request?: NativeDownloadRequest;
+  /** Set to true when an active download was interrupted by host disconnect or service worker restart. */
+  interrupted?: boolean;
 }
 
 export type Container = 'auto' | 'mp4' | 'mkv' | 'webm';

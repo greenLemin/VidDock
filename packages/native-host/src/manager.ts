@@ -112,10 +112,96 @@ export class TaskManager {
       });
     }
   }
+  getCacheInfo(): WorkDirCacheInfo {
+    return getWorkDirCacheInfo(this.ctx.workRoot);
+  }
+
+  clearCache(): ClearCacheResult {
+    const keep = new Set<string>();
+    for (const [id, job] of this.jobs) {
+      if (!isTerminal(job.state)) {
+        keep.add(id);
+      }
+    }
+    return clearInactiveWorkDirs(this.ctx.workRoot, keep);
+  }
+}
+
+export const DEFAULT_WORK_DIR_MAX_AGE_MS = 24 * 3600 * 1000; // 24 hours
+
+export interface WorkDirCacheInfo {
+  bytes: number;
+  dirCount: number;
+}
+
+export interface ClearCacheResult {
+  removed: number;
+  freedBytes: number;
+}
+
+function getDirSizeBytes(dirPath: string): number {
+  let total = 0;
+  try {
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dirPath, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          total += getDirSizeBytes(full);
+        } else if (entry.isFile()) {
+          total += fs.statSync(full).size;
+        }
+      } catch {}
+    }
+  } catch {}
+  return total;
+}
+
+export function getWorkDirCacheBytes(workRoot: string): number {
+  return getWorkDirCacheInfo(workRoot).bytes;
+}
+
+export function getWorkDirCacheInfo(workRoot: string): WorkDirCacheInfo {
+  let bytes = 0;
+  let dirCount = 0;
+  if (!fs.existsSync(workRoot)) return { bytes: 0, dirCount: 0 };
+  try {
+    const entries = fs.readdirSync(workRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(workRoot, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          dirCount++;
+          bytes += getDirSizeBytes(full);
+        } else if (entry.isFile()) {
+          bytes += fs.statSync(full).size;
+        }
+      } catch {}
+    }
+  } catch {}
+  return { bytes, dirCount };
+}
+
+export function clearInactiveWorkDirs(workRoot: string, activeTaskIds: Set<string>): ClearCacheResult {
+  let removed = 0;
+  let freedBytes = 0;
+  if (!fs.existsSync(workRoot)) return { removed: 0, freedBytes: 0 };
+  for (const name of fs.readdirSync(workRoot)) {
+    if (activeTaskIds.has(name)) continue;
+    const full = path.join(workRoot, name);
+    try {
+      const st = fs.statSync(full);
+      const size = st.isDirectory() ? getDirSizeBytes(full) : st.size;
+      fs.rmSync(full, { recursive: true, force: true });
+      removed++;
+      freedBytes += size;
+    } catch {}
+  }
+  return { removed, freedBytes };
 }
 
 /** Remove stale work directories (older than `maxAgeMs`) that no task refers to. */
-export function pruneWorkDirs(workRoot: string, keep: Set<string>, maxAgeMs = 7 * 24 * 3600 * 1000): number {
+export function pruneWorkDirs(workRoot: string, keep: Set<string>, maxAgeMs = DEFAULT_WORK_DIR_MAX_AGE_MS): number {
   let removed = 0;
   if (!fs.existsSync(workRoot)) return 0;
   for (const name of fs.readdirSync(workRoot)) {

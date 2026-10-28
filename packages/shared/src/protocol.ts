@@ -26,7 +26,19 @@ export type HostRequest =
   | { type: 'file.open' | 'file.reveal'; id: string; path: string }
   | { type: 'config'; id: string; maxSimultaneous: number }
   | { type: 'diagnostics'; id: string }
-  | { type: 'tasks.list'; id: string };
+  | { type: 'tasks.list'; id: string }
+  | { type: 'cache.info'; id: string }
+  | { type: 'cache.clear'; id: string };
+
+export interface CacheInfoData {
+  bytes: number;
+  dirCount: number;
+}
+
+export interface CacheClearData {
+  removed: number;
+  freedBytes: number;
+}
 
 export type HostMessage =
   | { type: 'reply'; id: string; ok: true; data?: unknown }

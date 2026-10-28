@@ -3,11 +3,14 @@ import { nativeClient } from './native_client.ts';
 import { taskCoordinator } from './task_coordinator.ts';
 
 export const lifecycle = {
-  onInstalled: async (_details: chrome.runtime.InstalledDetails): Promise<void> => {
+  onInstalled: async (details: chrome.runtime.InstalledDetails): Promise<void> => {
     try {
-      const stored = await chrome.storage.local.get('settings');
+      const stored = await chrome.storage.local.get(['settings', 'hasSeenOnboarding']);
       if (!stored.settings) {
         await chrome.storage.local.set({ settings: DEFAULT_SETTINGS });
+      }
+      if (details?.reason === 'install') {
+        await chrome.storage.local.set({ hasSeenOnboarding: false });
       }
     } catch {}
 
@@ -26,12 +29,16 @@ export const lifecycle = {
     if (alarm.name !== 'viddock-watchdog') return;
 
     await taskCoordinator.init();
-    const activeTasks = taskCoordinator.getTasks().filter((t) => isActive(t.state));
+    const needsConnection = taskCoordinator
+      .getTasks()
+      .some((t) => t.engine === 'native' && (isActive(t.state) || (t.state === 'queued' && t.interrupted)));
 
-    if (activeTasks.length > 0) {
+    if (needsConnection) {
       const status = nativeClient.getStatus();
       if (!status.connected) {
         nativeClient.connect();
+      } else {
+        await taskCoordinator.resumeQueuedTasks();
       }
     }
 

@@ -151,6 +151,18 @@ chrome.runtime.onMessage.addListener(
             break;
           }
 
+          case 'cacheInfo': {
+            const info = await nativeClient.sendRequest({ type: 'cache.info' });
+            sendResponse({ ok: true, data: info });
+            break;
+          }
+
+          case 'cacheClear': {
+            const res = await nativeClient.sendRequest({ type: 'cache.clear' });
+            sendResponse({ ok: true, data: res });
+            break;
+          }
+
           default: {
             const fallbackReq = req as { type?: string };
             sendResponse({ ok: false, error: `Unhandled request type: ${fallbackReq.type ?? 'unknown'}` });

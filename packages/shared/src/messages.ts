@@ -36,7 +36,9 @@ export type BgRequest =
   | { type: 'getSettings' }
   | { type: 'setSettings'; settings: Partial<Settings> }
   | { type: 'nativeStatus' }
-  | { type: 'diagnostics' };
+  | { type: 'diagnostics' }
+  | { type: 'cacheInfo' }
+  | { type: 'cacheClear' };
 
 export interface PopupState {
   tabId: number;

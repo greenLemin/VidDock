@@ -143,6 +143,12 @@ export class HostServer {
         case 'diagnostics':
           this.reply(id, { ...(await this.hello()), tasks: this.manager.list().length, node: process.version });
           break;
+        case 'cache.info':
+          this.reply(id, this.manager.getCacheInfo());
+          break;
+        case 'cache.clear':
+          this.reply(id, this.manager.clearCache());
+          break;
         default:
           throw new Error(`Unknown message type: ${String(m.type)}`);
       }

@@ -122,6 +122,8 @@ describe('Settings Controller & Diagnostics Tests', () => {
       'filename-template-input',
       'btn-test-companion',
       'template-preview-text',
+      'diag-cache-size',
+      'btn-clear-cache',
     ];
 
     for (const id of ids) {
@@ -255,5 +257,80 @@ describe('Settings Controller & Diagnostics Tests', () => {
 
     // TASK-P0-04 check: Warning banner
     expect(htmlContent).toContain('ffmpeg-warning-banner');
+
+    // TASK-P2-02 check: Cache elements
+    expect(htmlContent).toContain('diag-cache-size');
+    expect(htmlContent).toContain('btn-clear-cache');
+  });
+
+  it('displays formatted temporary cache size when companion is connected', async () => {
+    const controller = new SettingsController();
+    controller.renderNativeStatus({
+      connected: true,
+      version: '1.0.0',
+      ffmpeg: '/opt/homebrew/bin/ffmpeg',
+      ffprobe: '/opt/homebrew/bin/ffprobe',
+    });
+
+    vi.spyOn(chrome.runtime, 'sendMessage').mockResolvedValueOnce({
+      ok: true,
+      data: { bytes: 52428800 }, // 50 MB
+    });
+
+    await controller.loadCacheInfo();
+
+    const cacheEl = elements.get('diag-cache-size')!;
+    const clearBtn = elements.get('btn-clear-cache')!;
+
+    expect(cacheEl.textContent).toBe('50.0 MB');
+    expect(clearBtn.disabled).toBe(false);
+  });
+
+  it('Clear Cache button sends cacheClear message, shows feedback, and refreshes metrics', async () => {
+    const controller = new SettingsController();
+    (controller as unknown as { bindEvents: () => void }).bindEvents();
+
+    controller.renderNativeStatus({
+      connected: true,
+      version: '1.0.0',
+      ffmpeg: '/opt/homebrew/bin/ffmpeg',
+      ffprobe: '/opt/homebrew/bin/ffprobe',
+    });
+
+    const sendSpy = vi.spyOn(chrome.runtime, 'sendMessage').mockImplementation(async (msg: unknown) => {
+      const type = (msg as { type?: string }).type;
+      if (type === 'cacheClear') {
+        return { ok: true, data: { removed: 3, freedBytes: 10485760 } };
+      }
+      if (type === 'cacheInfo') {
+        return { ok: true, data: { bytes: 0 } };
+      }
+      return { ok: true };
+    });
+
+    const clearBtn = elements.get('btn-clear-cache')!;
+    clearBtn.dispatchEvent({ type: 'click' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendSpy).toHaveBeenCalledWith({ type: 'cacheClear' });
+    expect(clearBtn.textContent).toBe('Cleared!');
+
+    const cacheEl = elements.get('diag-cache-size')!;
+    expect(cacheEl.textContent).toBe('0 B');
+  });
+
+  it('disables Clear Cache button and displays placeholder when host is disconnected', () => {
+    const controller = new SettingsController();
+    controller.renderNativeStatus({
+      connected: false,
+      error: 'Host disconnected',
+    });
+
+    const cacheEl = elements.get('diag-cache-size')!;
+    const clearBtn = elements.get('btn-clear-cache')!;
+
+    expect(cacheEl.textContent).toBe('--');
+    expect(clearBtn.disabled).toBe(true);
   });
 });

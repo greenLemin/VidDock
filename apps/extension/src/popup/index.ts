@@ -28,8 +28,32 @@ export class PopupController {
 
   async init(): Promise<void> {
     this.bindStaticEvents();
+    await this.checkOnboarding();
     await this.refreshState();
     this.connectStreamingPort();
+  }
+
+  async checkOnboarding(): Promise<void> {
+    const modal = document.getElementById('onboarding-modal');
+    if (!modal) return;
+    try {
+      const stored = await chrome.storage.local.get('hasSeenOnboarding');
+      if (!stored.hasSeenOnboarding) {
+        modal.classList.remove('hidden');
+        document.getElementById('btn-onboarding-dismiss')?.addEventListener(
+          'click',
+          async () => {
+            await chrome.storage.local.set({ hasSeenOnboarding: true });
+            modal.classList.add('hidden');
+          },
+          { once: true },
+        );
+      } else {
+        modal.classList.add('hidden');
+      }
+    } catch {
+      modal.classList.add('hidden');
+    }
   }
 
   private bindStaticEvents(): void {
@@ -560,19 +584,39 @@ export class PopupController {
     if (!dock || !taskCountEl || !speedEl || !progressFill) return;
 
     const activeTasks = this.state.tasks.filter((t) => isActive(t.state));
-    if (activeTasks.length === 0) {
+    const queuedTasks = this.state.tasks.filter((t) => t.state === 'queued');
+    const failedTasks = this.state.tasks.filter((t) => t.state === 'failed');
+
+    if (activeTasks.length === 0 && queuedTasks.length === 0 && failedTasks.length === 0) {
       dock.classList.add('hidden');
       return;
     }
 
     dock.classList.remove('hidden');
-    taskCountEl.textContent = `${activeTasks.length} Active Download${activeTasks.length > 1 ? 's' : ''}`;
 
-    const totalSpeed = activeTasks.reduce((sum, t) => sum + (t.progress?.bytesPerSec || 0), 0);
-    speedEl.textContent = formatSpeed(totalSpeed);
+    if (activeTasks.length > 0) {
+      let label = `${activeTasks.length} Active Download${activeTasks.length > 1 ? 's' : ''}`;
+      if (failedTasks.length > 0) label += ` • ${failedTasks.length} Failed`;
+      else if (queuedTasks.length > 0) label += ` • ${queuedTasks.length} Queued`;
+      taskCountEl.textContent = label;
 
-    const avgPercent = activeTasks.reduce((sum, t) => sum + (t.progress?.percent || 0), 0) / activeTasks.length;
-    progressFill.style.width = `${Math.min(100, Math.max(0, avgPercent))}%`;
+      const totalSpeed = activeTasks.reduce((sum, t) => sum + (t.progress?.bytesPerSec || 0), 0);
+      speedEl.textContent = formatSpeed(totalSpeed);
+
+      const avgPercent = activeTasks.reduce((sum, t) => sum + (t.progress?.percent || 0), 0) / activeTasks.length;
+      progressFill.className = 'progress-fill';
+      progressFill.style.width = `${Math.min(100, Math.max(0, avgPercent))}%`;
+    } else if (failedTasks.length > 0) {
+      taskCountEl.textContent = `${failedTasks.length} Failed Download${failedTasks.length > 1 ? 's' : ''}`;
+      speedEl.textContent = 'Action Required';
+      progressFill.className = 'progress-fill failed';
+      progressFill.style.width = '100%';
+    } else {
+      taskCountEl.textContent = `${queuedTasks.length} Queued Task${queuedTasks.length > 1 ? 's' : ''}`;
+      speedEl.textContent = 'Queued';
+      progressFill.className = 'progress-fill';
+      progressFill.style.width = '0%';
+    }
   }
 }
 

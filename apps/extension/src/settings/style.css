@@ -282,7 +282,8 @@ input:checked + .slider:before {
   overflow-x: auto;
 }
 
-.diag-item-id {
+.diag-item-id,
+.diag-item-cache {
   grid-column: span 2;
 }
 
