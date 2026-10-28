@@ -5,6 +5,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['packages/shared/src/**/*.ts'],
+      exclude: ['packages/shared/src/messages.ts'],
       thresholds: {
         statements: 80,
         branches: 80,

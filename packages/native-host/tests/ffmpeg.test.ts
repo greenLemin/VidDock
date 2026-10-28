@@ -111,7 +111,7 @@ describe('Native Host FFmpeg & Binary Discovery Tests', () => {
 
   it('aborts process execution when AbortSignal triggers in runFfmpeg', async () => {
     const mockSleep = path.join(tempDir, 'sleep.sh');
-    fs.writeFileSync(mockSleep, '#!/bin/sh\nsleep 10\nexit 0', { mode: 0o755 });
+    fs.writeFileSync(mockSleep, '#!/bin/sh\nexec sleep 10\n', { mode: 0o755 });
 
     const controller = new AbortController();
     const runPromise = runFfmpeg(mockScriptPath(mockSleep), [], controller.signal);
