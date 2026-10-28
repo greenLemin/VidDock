@@ -1,5 +1,5 @@
 /** Extension-internal messaging (popup / manager <-> service worker, content scripts -> service worker). */
-import type { DownloadTask, DualStreamLayout, MediaItem, Settings } from './types.ts';
+import type { DownloadTask, DualStreamLayout, LiveMode, MediaItem, Settings } from './types.ts';
 
 export interface NativeStatus {
   connected: boolean;
@@ -21,6 +21,8 @@ export interface StartDownloadParams {
   mergeGroup?: boolean;
   /** Dual-stream layout for multi-track presentations (default: multi-track). */
   layout?: DualStreamLayout;
+  liveMode?: LiveMode;
+  liveDurationSeconds?: number;
 }
 
 export type BgRequest =
@@ -30,7 +32,7 @@ export type BgRequest =
   | {
       type: 'taskAction';
       taskId: string;
-      action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' | 'start' | 'force-start';
+      action: 'pause' | 'resume' | 'cancel' | 'stop' | 'retry' | 'remove' | 'open' | 'reveal' | 'start' | 'force-start';
     }
   | { type: 'clearCompleted' }
   | { type: 'getSettings' }

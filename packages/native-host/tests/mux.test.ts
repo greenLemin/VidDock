@@ -138,9 +138,13 @@ describe('buildMuxArgs', () => {
 
     expect(args).toContain('-map');
     expect(args).toContain('[v]');
-    // Primary audio mapped (index 0), secondary ignored
+    // Both primary audio (index 0) and secondary audio (index 1) are mapped with metadata
     expect(args).toContain('0:a');
-    expect(args).not.toContain('1:a');
+    expect(args).toContain('1:a');
+    expect(args).toContain('-metadata:s:a:0');
+    expect(args).toContain('title=Primary');
+    expect(args).toContain('-metadata:s:a:1');
+    expect(args).toContain('title=Secondary');
 
     expect(args).toContain('-c:v');
     expect(args).toContain('libx264');
@@ -485,8 +489,8 @@ describe('dual-stream live remuxing integration', () => {
     const fcIndex = args.indexOf('-filter_complex');
     const filter = args[fcIndex + 1]!;
     // Slides (input 1) must be scaled as [main], camera (input 0) must be scaled as [pip]
-    expect(filter).toContain('[1:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
-    expect(filter).toContain('[0:v:0]scale=iw/3.5:-2,setsar=1[pip]');
+    expect(filter).toContain('[1:v:0]setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+    expect(filter).toContain('[0:v:0]setpts=PTS-STARTPTS,scale=iw/3.5:-2,setsar=1[pip]');
     expect(filter).toContain('[main][pip]overlay=W-w-24:H-h-24[v]');
   });
 
@@ -540,8 +544,8 @@ describe('dual-stream live remuxing integration', () => {
     const fcIndex = args.indexOf('-filter_complex');
     const filter = args[fcIndex + 1]!;
     // Input 1 (Secondary video / slides) must be [main], Input 0 (Primary video / camera) must be [pip]
-    expect(filter).toContain('[1:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
-    expect(filter).toContain('[0:v:0]scale=iw/3.5:-2,setsar=1[pip]');
+    expect(filter).toContain('[1:v:0]setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+    expect(filter).toContain('[0:v:0]setpts=PTS-STARTPTS,scale=iw/3.5:-2,setsar=1[pip]');
     expect(filter).toContain('[main][pip]overlay=W-w-24:H-h-24[v]');
   });
 
@@ -574,7 +578,7 @@ describe('dual-stream live remuxing integration', () => {
     const fcIndex = args.indexOf('-filter_complex');
     const filter = args[fcIndex + 1]!;
     // Input 2 (Secondary video stream 3, type 1 / slides) must be [main]
-    expect(filter).toContain('[2:v:0]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
+    expect(filter).toContain('[2:v:0]setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main]');
   });
 
   it('transcodes video with libvpx-vp9 and audio with libopus when dual-stream choice is webm', () => {
@@ -631,4 +635,195 @@ describe('dual-stream live remuxing integration', () => {
     expect(filter).toContain('[2:v:0]');
     expect(filter).toContain('hstack=inputs=2[v]');
   });
+
+  it('TASK-P2-01: normalizes timestamps with setpts=PTS-STARTPTS in side-by-side and pip filtergraphs', () => {
+    const inputs = [
+      makeMockInput({ file: 'camera.mp4', videoCodecs: ['h264'], audioCodecs: ['aac'] }),
+      makeMockInput({ file: 'presentation.mp4', videoCodecs: ['h264'], audioCodecs: ['aac'] }),
+    ];
+
+    // 1. Side-by-side
+    const sbsChoice = chooseContainer('auto', inputs, 'side-by-side');
+    const sbsArgs = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice: sbsChoice,
+      output: 'out_sbs.mp4',
+      title: 'SbS PTS Test',
+      layout: 'side-by-side',
+    });
+    const sbsFilter = sbsArgs[sbsArgs.indexOf('-filter_complex') + 1]!;
+    expect(sbsFilter).toContain('setpts=PTS-STARTPTS');
+    expect(sbsFilter).toMatch(/\[0:v:\d\]setpts=PTS-STARTPTS/);
+    expect(sbsFilter).toMatch(/\[1:v:\d\]setpts=PTS-STARTPTS/);
+
+    // 2. PiP
+    const pipChoice = chooseContainer('auto', inputs, 'pip');
+    const pipArgs = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice: pipChoice,
+      output: 'out_pip.mp4',
+      title: 'PiP PTS Test',
+      layout: 'pip',
+    });
+    const pipFilter = pipArgs[pipArgs.indexOf('-filter_complex') + 1]!;
+    expect(pipFilter).toContain('setpts=PTS-STARTPTS');
+    expect(pipFilter).toMatch(/\[0:v:\d\]setpts=PTS-STARTPTS/);
+    expect(pipFilter).toMatch(/\[1:v:\d\]setpts=PTS-STARTPTS/);
+  });
+
+  it('TASK-P2-01: applies aresample=async=1 and maps multiple audio tracks with Primary and Secondary metadata', () => {
+    const inputs = [
+      makeMockInput({ file: 'presenter_camera.mp4', videoCodecs: ['h264'], audioCodecs: ['aac'] }),
+      makeMockInput({ file: 'slides_screen.mp4', videoCodecs: ['h264'], audioCodecs: ['aac'] }),
+    ];
+
+    const choice = chooseContainer('auto', inputs, 'side-by-side');
+    const args = buildMuxArgs({
+      inputs,
+      subtitles: [],
+      choice,
+      output: 'out_dual_audio.mp4',
+      title: 'Dual Audio Muxing Test',
+      layout: 'side-by-side',
+    });
+
+    // Audio filter contains aresample=async=1
+    expect(args).toContain('-af');
+    const afIndex = args.indexOf('-af');
+    expect(args[afIndex + 1]).toContain('aresample=async=1');
+
+    // Maps both audio streams
+    expect(args).toContain('-map');
+    expect(args).toContain('0:a');
+    expect(args).toContain('1:a');
+
+    // Metadata specifies Primary and Secondary titles
+    expect(args).toContain('-metadata:s:a:0');
+    expect(args).toContain('title=Primary');
+    expect(args).toContain('-metadata:s:a:1');
+    expect(args).toContain('title=Secondary');
+
+    // Audio is re-encoded with 192k aac
+    expect(args).toContain('-c:a');
+    expect(args).toContain('aac');
+    expect(args).toContain('-b:a');
+    expect(args).toContain('192k');
+  });
+
+  it('TASK-P2-01: empirically normalizes dual-stream feeds with delayed camera/audio start (<0.1s offset)', async () => {
+    const ffmpeg = findBinary('ffmpeg');
+    const ffprobe = findBinary('ffprobe');
+    if (!ffmpeg || !ffprobe) return;
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'viddock-mux-delayed-pts-'));
+    try {
+      const slidesPath = path.join(tmpDir, 'slides_feed.mp4');
+      const cameraPath = path.join(tmpDir, 'camera_delayed.mp4');
+
+      // Slides start immediately at t=0
+      await runFfmpeg(
+        ffmpeg,
+        [
+          '-f',
+          'lavfi',
+          '-i',
+          'testsrc=duration=2:size=640x360:rate=25',
+          '-f',
+          'lavfi',
+          '-i',
+          'sine=frequency=440:duration=2:sample_rate=44100',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-pix_fmt',
+          'yuv420p',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '64k',
+          slidesPath,
+        ],
+        new AbortController().signal,
+      );
+
+      // Camera starts with 0.8s delayed PTS offset (delayed camera/audio start)
+      await runFfmpeg(
+        ffmpeg,
+        [
+          '-f',
+          'lavfi',
+          '-itsoffset',
+          '0.8',
+          '-i',
+          'testsrc=duration=2:size=320x240:rate=25',
+          '-f',
+          'lavfi',
+          '-itsoffset',
+          '0.8',
+          '-i',
+          'sine=frequency=880:duration=2:sample_rate=44100',
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-pix_fmt',
+          'yuv420p',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '64k',
+          cameraPath,
+        ],
+        new AbortController().signal,
+      );
+
+      const slidesProbe = await probe(ffprobe, slidesPath);
+      const cameraProbe = await probe(ffprobe, cameraPath);
+
+      const inputs: MuxInput[] = [
+        { file: slidesPath, kind: 'muxed', probe: slidesProbe, label: 'Presentation slides' },
+        { file: cameraPath, kind: 'muxed', probe: cameraProbe, label: 'Presenter camera' },
+      ];
+
+      const outPath = path.join(tmpDir, 'muxed_dual.mp4');
+      const choice = chooseContainer('auto', inputs, 'side-by-side');
+      const args = buildMuxArgs({
+        inputs,
+        subtitles: [],
+        choice,
+        output: outPath,
+        title: 'Empirical Delayed Sync Test',
+        layout: 'side-by-side',
+      });
+
+      const res = await runFfmpeg(ffmpeg, args, new AbortController().signal);
+      expect(res.code).toBe(0);
+      expect(fs.existsSync(outPath)).toBe(true);
+
+      const outProbe = await probe(ffprobe, outPath);
+      const analysis = analyzeProbe(outProbe, { video: true, audio: true, durationSec: 2 });
+      expect(analysis.errors).toEqual([]);
+
+      // Verify all audio tracks are preserved
+      const audioStreams = outProbe.streams.filter((s) => s.codec_type === 'audio');
+      expect(audioStreams.length).toBe(2);
+
+      // Verify start_time offset for all streams is normalized to <0.1s
+      const videoStream = outProbe.streams.find((s) => s.codec_type === 'video');
+      expect(videoStream).toBeDefined();
+      const videoStart = parseFloat(videoStream?.start_time ?? '0');
+      expect(Math.abs(videoStart)).toBeLessThan(0.1);
+
+      for (const a of audioStreams) {
+        const audioStart = parseFloat(a.start_time ?? '0');
+        expect(Math.abs(audioStart)).toBeLessThan(0.1);
+        expect(Math.abs(audioStart - videoStart)).toBeLessThan(0.1);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

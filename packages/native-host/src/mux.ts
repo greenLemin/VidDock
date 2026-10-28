@@ -122,6 +122,7 @@ export function buildMuxArgs(opts: {
     inputIndex: number;
     streamIndex: number;
     videoIndex?: number;
+    audioIndex?: number;
     codecName?: string;
     width?: number;
     height?: number;
@@ -130,6 +131,7 @@ export function buildMuxArgs(opts: {
   const audioStreams: StreamRef[] = [];
   inputs.forEach((input, inputIndex) => {
     let videoStreamIndex = 0;
+    let audioStreamIndex = 0;
     input.probe.streams.forEach((s) => {
       if (s.codec_type === 'video' && !(s as { disposition?: { attached_pic?: number } }).disposition?.attached_pic) {
         videoStreams.push({
@@ -141,7 +143,12 @@ export function buildMuxArgs(opts: {
           height: s.height,
         });
       } else if (s.codec_type === 'audio') {
-        audioStreams.push({ inputIndex, streamIndex: s.index, codecName: s.codec_name });
+        audioStreams.push({
+          inputIndex,
+          streamIndex: s.index,
+          audioIndex: audioStreamIndex++,
+          codecName: s.codec_name,
+        });
       }
     });
   });
@@ -181,33 +188,43 @@ export function buildMuxArgs(opts: {
     const v1Ref = `${v1.inputIndex}:v:${v1.videoIndex}`;
     if (layout === 'side-by-side') {
       const filter =
-        `[${v0Ref}]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1[left];` +
-        `[${v1Ref}]scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1[right];` +
+        `[${v0Ref}]setpts=PTS-STARTPTS,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1[left];` +
+        `[${v1Ref}]setpts=PTS-STARTPTS,scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,setsar=1[right];` +
         `[left][right]hstack=inputs=2[v]`;
       args.push('-filter_complex', filter);
     } else {
       const filter =
-        `[${v1Ref}]scale=iw/3.5:-2,setsar=1[pip];` +
-        `[${v0Ref}]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main];` +
+        `[${v1Ref}]setpts=PTS-STARTPTS,scale=iw/3.5:-2,setsar=1[pip];` +
+        `[${v0Ref}]setpts=PTS-STARTPTS,scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1[main];` +
         `[main][pip]overlay=W-w-24:H-h-24[v]`;
       args.push('-filter_complex', filter);
     }
     args.push('-map', '[v]');
     if (audioStreams.length > 0) {
-      const primaryAudio =
-        audioStreams.find((a) => {
-          const inp = inputs[a.inputIndex];
-          const text = `${inp?.label || ''} ${inp?.file || ''}`;
-          return inp?.kind === 'audio' || /audio|mic|sound/i.test(text);
-        }) ?? audioStreams[0]!;
-      args.push('-map', `${primaryAudio.inputIndex}:a`);
-      const codec = primaryAudio.codecName ?? '';
-      if (c.ext === 'mp4' && !MP4_AUDIO.has(codec)) {
-        args.push('-c:a', 'aac', '-b:a', '192k');
-      } else if (c.ext === 'webm' && !WEBM_AUDIO.has(codec)) {
+      const primaryAudioIndex = audioStreams.findIndex((a) => {
+        const inp = inputs[a.inputIndex];
+        const text = `${inp?.label || ''} ${inp?.file || ''}`;
+        return inp?.kind === 'audio' || /audio|mic|sound/i.test(text);
+      });
+      const primaryAudio = primaryAudioIndex >= 0 ? audioStreams[primaryAudioIndex]! : audioStreams[0]!;
+      const secondaryAudio = audioStreams.filter((_, idx) => idx !== (primaryAudioIndex >= 0 ? primaryAudioIndex : 0));
+      const orderedAudio = [primaryAudio, ...secondaryAudio];
+
+      orderedAudio.forEach((a, k) => {
+        const inputAudioCount = audioStreams.filter((x) => x.inputIndex === a.inputIndex).length;
+        const ref = inputAudioCount > 1 ? `${a.inputIndex}:a:${a.audioIndex ?? 0}` : `${a.inputIndex}:a`;
+        args.push('-map', ref);
+        const defaultTitle = k === 0 ? 'Primary' : k === 1 ? 'Secondary' : `Track ${k + 1}`;
+        const inp = inputs[a.inputIndex];
+        const title = inp?.label && !/video|type\s*\d/i.test(inp.label) ? inp.label : defaultTitle;
+        args.push(`-metadata:s:a:${k}`, `title=${title.replace(/[\r\n]/g, ' ').slice(0, 100)}`);
+      });
+
+      args.push('-af', 'aresample=async=1:first_pts=0');
+      if (c.ext === 'webm') {
         args.push('-c:a', 'libopus', '-b:a', '128k');
       } else {
-        args.push('-c:a', 'copy');
+        args.push('-c:a', 'aac', '-b:a', '192k');
       }
     }
     if (c.ext === 'webm') {

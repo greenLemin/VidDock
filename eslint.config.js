@@ -11,6 +11,7 @@ export default tseslint.config(
       'coverage/**',
       'test-results/**',
       '.tmp/**',
+      '.agents/**',
     ],
   },
   js.configs.recommended,
@@ -19,7 +20,7 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-non-null-assertion': 'off',
-      'no-empty': ['error', { allowEmptyCatch: true }],
+      'no-empty': ['error', { allowEmptyCatch: false }],
     },
   },
   {

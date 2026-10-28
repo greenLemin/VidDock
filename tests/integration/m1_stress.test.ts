@@ -117,9 +117,13 @@ describe('M1 Stress Tests: buildMuxArgs audio variations', () => {
       title: 'Test',
       layout: 'side-by-side',
     });
-    // Only 0:a is mapped to avoid echo
+    // Both audio tracks are mapped and labelled
     expect(args).toContain('0:a');
-    expect(args).not.toContain('1:a');
+    expect(args).toContain('1:a');
+    expect(args).toContain('-metadata:s:a:0');
+    expect(args).toContain('title=Primary');
+    expect(args).toContain('-metadata:s:a:1');
+    expect(args).toContain('title=Secondary');
   });
 
   it('handles audio when input 0 has NO audio but input 1 HAS audio', () => {

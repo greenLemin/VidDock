@@ -179,6 +179,7 @@ export class MediaSniffer {
         source: 'network',
         hasVideo: described.hasVideo,
         hasAudio: described.hasAudio,
+        isLive: described.isLive,
         unsupportedReason: described.unsupportedReason,
         detectedAt: Date.now(),
       };

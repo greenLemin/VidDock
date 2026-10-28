@@ -222,6 +222,13 @@ export class DashboardController {
     statusBadge.textContent = task.state;
     meta.appendChild(statusBadge);
 
+    if (task.isLive) {
+      const liveBadge = document.createElement('span');
+      liveBadge.className = 'badge-live';
+      liveBadge.innerHTML = `<span class="live-dot"></span>LIVE`;
+      meta.appendChild(liveBadge);
+    }
+
     if (task.qualityLabel) {
       const q = document.createElement('span');
       q.textContent = `• Quality: ${task.qualityLabel}`;
@@ -247,6 +254,14 @@ export class DashboardController {
     actions.className = 'task-actions';
 
     if (isActive(task.state)) {
+      if (task.isLive) {
+        const btnStop = document.createElement('button');
+        btnStop.className = 'btn-primary btn-sm btn-stop';
+        btnStop.textContent = 'Stop & Save';
+        btnStop.addEventListener('click', () => this.executeAction(task.id, 'stop'));
+        actions.appendChild(btnStop);
+      }
+
       const btnPause = document.createElement('button');
       btnPause.className = 'btn-secondary btn-sm';
       btnPause.textContent = 'Pause';
@@ -421,7 +436,7 @@ export class DashboardController {
 
   private async executeAction(
     taskId: string,
-    action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' | 'force-start' | 'start',
+    action: 'pause' | 'resume' | 'cancel' | 'stop' | 'retry' | 'remove' | 'open' | 'reveal' | 'force-start' | 'start',
   ): Promise<void> {
     try {
       await chrome.runtime.sendMessage({

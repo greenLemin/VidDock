@@ -481,6 +481,8 @@ export class TaskCoordinator {
         segmentConcurrency: this.settings.segmentConcurrency,
         maxRetries: this.settings.maxRetries,
         retryBaseMs: this.settings.retryBaseMs,
+        liveMode: params.liveMode ?? (item.isLive ? 'dvr' : undefined),
+        liveDurationSeconds: params.liveDurationSeconds,
       },
       expectedDurationSec: item.durationSec,
       layout: layout || params.layout || item.layout || 'multi-track',
@@ -497,6 +499,8 @@ export class TaskCoordinator {
       state: 'queued',
       progress: emptyProgress(),
       request: nativeRequest,
+      isLive: item.isLive,
+      liveMode: params.liveMode ?? (item.isLive ? 'dvr' : undefined),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -525,7 +529,7 @@ export class TaskCoordinator {
 
   async handleTaskAction(
     taskId: string,
-    action: 'pause' | 'resume' | 'cancel' | 'retry' | 'remove' | 'open' | 'reveal' | 'start' | 'force-start',
+    action: 'pause' | 'resume' | 'cancel' | 'stop' | 'retry' | 'remove' | 'open' | 'reveal' | 'start' | 'force-start',
   ): Promise<void> {
     await this.init();
     const task = this.tasks.get(taskId);
@@ -625,6 +629,15 @@ export class TaskCoordinator {
             this.broadcastTaskUpdate(task);
             this.syncActiveBadges();
           });
+      }
+      return;
+    }
+
+    if (action === 'stop') {
+      if (task.engine === 'native') {
+        this.client.sendRequest({ type: 'download.stop', taskId }).catch((err: unknown) => {
+          console.warn('[TaskCoordinator] Failed to send download.stop:', err);
+        });
       }
       return;
     }

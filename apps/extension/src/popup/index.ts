@@ -2,6 +2,7 @@ import type {
   BgResponse,
   DownloadTask,
   DualStreamLayout,
+  LiveMode,
   MediaItem,
   PopupState,
   StartDownloadParams,
@@ -24,6 +25,8 @@ export class PopupController {
   private state: PopupState | null = null;
   private selectedQualities = new Map<string, string>();
   private selectedLayouts = new Map<string, DualStreamLayout>();
+  private selectedLiveModes = new Map<string, LiveMode>();
+  private selectedLiveDurations = new Map<string, number>();
   private uiPort: chrome.runtime.Port | null = null;
 
   async init(): Promise<void> {
@@ -244,6 +247,13 @@ export class PopupController {
     badge.textContent = item.source === 'mediasite' ? 'Mediasite' : item.kind.toUpperCase();
     topRow.appendChild(badge);
 
+    if (item.isLive) {
+      const liveBadge = document.createElement('span');
+      liveBadge.className = 'badge-live';
+      liveBadge.innerHTML = `<span class="live-dot"></span>LIVE`;
+      topRow.appendChild(liveBadge);
+    }
+
     if (item.durationSec) {
       const duration = document.createElement('span');
       duration.className = 'media-duration';
@@ -336,7 +346,126 @@ export class PopupController {
       card.appendChild(layoutGroup);
     }
 
-    // Download Button
+    // Live Stream Controls if applicable
+    if (item.isLive) {
+      const liveGroup = document.createElement('div');
+      liveGroup.className = 'live-mode-group';
+
+      const liveLabel = document.createElement('span');
+      liveLabel.className = 'live-mode-label';
+      liveLabel.textContent = 'Capture Mode:';
+      liveGroup.appendChild(liveLabel);
+
+      const segmented = document.createElement('div');
+      segmented.className = 'segmented-control live-mode-control';
+
+      const modes: { id: LiveMode; label: string }[] = [
+        { id: 'dvr', label: 'DVR Window' },
+        { id: 'duration', label: 'Fixed Duration' },
+        { id: 'until_stopped', label: 'Until Stopped' },
+      ];
+
+      const currentMode = this.selectedLiveModes.get(item.id) || 'dvr';
+
+      const durPicker = document.createElement('div');
+      durPicker.className = `live-duration-picker ${currentMode === 'duration' ? '' : 'hidden'}`;
+
+      const durLabel = document.createElement('span');
+      durLabel.className = 'live-duration-label';
+      durLabel.textContent = 'Duration:';
+      durPicker.appendChild(durLabel);
+
+      const durSelectWrapper = document.createElement('div');
+      durSelectWrapper.className = 'select-wrapper';
+
+      const durSelect = document.createElement('select');
+      durSelect.className = 'select-apple select-duration';
+      durSelect.setAttribute('aria-label', 'Select live capture duration');
+
+      const durations = [
+        { seconds: 300, label: '5 minutes' },
+        { seconds: 900, label: '15 minutes' },
+        { seconds: 1800, label: '30 minutes' },
+        { seconds: 3600, label: '60 minutes' },
+      ];
+
+      const currentDuration = this.selectedLiveDurations.get(item.id) || 900;
+
+      for (const d of durations) {
+        const opt = document.createElement('option');
+        opt.value = String(d.seconds);
+        opt.textContent = d.label;
+        if (d.seconds === currentDuration) opt.selected = true;
+        durSelect.appendChild(opt);
+      }
+
+      durSelect.addEventListener('change', () => {
+        this.selectedLiveDurations.set(item.id, Number(durSelect.value));
+      });
+
+      const chevron = document.createElement('span');
+      chevron.className = 'select-chevron';
+      chevron.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+      durSelectWrapper.appendChild(durSelect);
+      durSelectWrapper.appendChild(chevron);
+      durPicker.appendChild(durSelectWrapper);
+
+      modes.forEach((m) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `segment-btn ${m.id === currentMode ? 'active' : ''}`;
+        btn.textContent = m.label;
+        btn.setAttribute('data-mode', m.id);
+        btn.addEventListener('click', () => {
+          this.selectedLiveModes.set(item.id, m.id);
+          segmented.querySelectorAll('.segment-btn').forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          if (m.id === 'duration') {
+            durPicker.classList.remove('hidden');
+          } else {
+            durPicker.classList.add('hidden');
+          }
+        });
+        segmented.appendChild(btn);
+      });
+
+      liveGroup.appendChild(segmented);
+      liveGroup.appendChild(durPicker);
+      card.appendChild(liveGroup);
+    }
+
+    // Active Live Task: Render Stop & Save button
+    const activeLiveTask = item.isLive
+      ? this.state?.tasks.find(
+          (t) =>
+            (t.sourceUrl === item.url || t.request?.tracks?.some((tr) => tr.url === item.url)) && isActive(t.state),
+        )
+      : undefined;
+
+    if (activeLiveTask) {
+      const btnStop = document.createElement('button');
+      btnStop.type = 'button';
+      btnStop.className = 'btn-primary btn-stop';
+      btnStop.style.width = '100%';
+      btnStop.textContent = 'Stop & Save';
+      btnStop.addEventListener('click', async () => {
+        btnStop.disabled = true;
+        btnStop.textContent = 'Stopping...';
+        await chrome.runtime.sendMessage({
+          type: 'taskAction',
+          taskId: activeLiveTask.id,
+          action: 'stop',
+        });
+        setTimeout(() => {
+          this.refreshState();
+        }, 500);
+      });
+      card.appendChild(btnStop);
+      return card;
+    }
+
+    // Download / Record Button
     const btnDownload = document.createElement('button');
     btnDownload.type = 'button';
     btnDownload.className = 'btn-primary';
@@ -347,10 +476,17 @@ export class PopupController {
       btnDownload.style.opacity = '0.6';
       btnDownload.textContent = item.unsupportedReason;
     } else {
-      btnDownload.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download Video`;
+      btnDownload.innerHTML = item.isLive
+        ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg> Record Live Stream`
+        : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download Video`;
+
       btnDownload.addEventListener('click', async () => {
         btnDownload.disabled = true;
-        btnDownload.textContent = 'Starting...';
+        btnDownload.textContent = item.isLive ? 'Starting stream capture...' : 'Starting...';
+
+        const liveMode = item.isLive ? this.selectedLiveModes.get(item.id) || 'dvr' : undefined;
+        const liveDurationSeconds =
+          liveMode === 'duration' ? this.selectedLiveDurations.get(item.id) || 900 : undefined;
 
         const params: StartDownloadParams = {
           itemId: item.id,
@@ -360,6 +496,8 @@ export class PopupController {
             this.state?.settings?.dualStreamLayout ||
             item.layout ||
             'side-by-side',
+          liveMode,
+          liveDurationSeconds,
         };
 
         try {
@@ -368,16 +506,38 @@ export class PopupController {
             params,
           });
           if (res && res.ok) {
-            btnDownload.textContent = 'Queued in VidDock';
+            btnDownload.textContent = item.isLive ? 'Recording Live Stream...' : 'Queued in VidDock';
+            if (item.isLive && res.data?.taskId) {
+              const liveTaskId = res.data.taskId;
+              if (!card.querySelector('.btn-stop')) {
+                const btnStop = document.createElement('button');
+                btnStop.type = 'button';
+                btnStop.className = 'btn-primary btn-stop';
+                btnStop.style.width = '100%';
+                btnStop.style.marginTop = '6px';
+                btnStop.textContent = 'Stop & Save';
+                btnStop.addEventListener('click', async () => {
+                  btnStop.disabled = true;
+                  btnStop.textContent = 'Stopping...';
+                  await chrome.runtime.sendMessage({
+                    type: 'taskAction',
+                    taskId: liveTaskId,
+                    action: 'stop',
+                  });
+                  setTimeout(() => this.refreshState(), 500);
+                });
+                card.appendChild(btnStop);
+              }
+            }
             setTimeout(() => {
               this.refreshState();
             }, 500);
           } else {
-            btnDownload.textContent = 'Error starting download';
+            btnDownload.textContent = item.isLive ? 'Error starting capture' : 'Error starting download';
             btnDownload.disabled = false;
           }
         } catch {
-          btnDownload.textContent = 'Download Failed';
+          btnDownload.textContent = item.isLive ? 'Capture Failed' : 'Download Failed';
           btnDownload.disabled = false;
         }
       });
@@ -589,10 +749,40 @@ export class PopupController {
 
     if (activeTasks.length === 0 && queuedTasks.length === 0 && failedTasks.length === 0) {
       dock.classList.add('hidden');
+      dock.querySelector('.dock-stop-btn')?.remove();
       return;
     }
 
     dock.classList.remove('hidden');
+
+    const activeLiveTask = activeTasks.find((t) => t.isLive);
+    let dockStopBtn = dock.querySelector('.dock-stop-btn') as HTMLButtonElement | null;
+    if (activeLiveTask) {
+      if (!dockStopBtn) {
+        dockStopBtn = document.createElement('button');
+        dockStopBtn.className = 'btn-secondary btn-sm dock-stop-btn';
+        dockStopBtn.textContent = 'Stop & Save';
+        dockStopBtn.addEventListener('click', async () => {
+          dockStopBtn!.disabled = true;
+          dockStopBtn!.textContent = 'Stopping...';
+          await chrome.runtime.sendMessage({
+            type: 'taskAction',
+            taskId: activeLiveTask.id,
+            action: 'stop',
+          });
+          setTimeout(() => this.refreshState(), 500);
+        });
+        const dockHeader = dock.querySelector('.dock-header');
+        const viewAll = document.getElementById('dock-view-all');
+        if (dockHeader && viewAll) {
+          dockHeader.insertBefore(dockStopBtn, viewAll);
+        } else {
+          dock.appendChild(dockStopBtn);
+        }
+      }
+    } else if (dockStopBtn) {
+      dockStopBtn.remove();
+    }
 
     if (activeTasks.length > 0) {
       let label = `${activeTasks.length} Active Download${activeTasks.length > 1 ? 's' : ''}`;
