@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseAttributes, isMasterPlaylist, parseHls } from '../src/hls.ts';
 import { describeHls, describeDash } from '../src/describe.ts';
+import { parseMpd } from '../src/dash.ts';
 import { qualityLabel, sortQualities, dedupeQualities, pickQuality } from '../src/quality.ts';
 import {
   isRetryableStatus,
@@ -449,5 +450,86 @@ describe('URL and Classification helpers (packages/shared/src/url.ts)', () => {
     expect(isSafeHeaderValue('Bearer token123')).toBe(true);
     expect(isSafeHeaderValue('Bearer bad\r\nHeader: value')).toBe(false);
     expect(isSafeHeaderValue('x'.repeat(20000))).toBe(false);
+  });
+});
+
+describe('DASH MPD parser (packages/shared/src/dash.ts)', () => {
+  it('parses ISO/IEC 23009-1 template specifiers ($Number%d$, $Number%5d$, $Time%04u$)', () => {
+    const mpdXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT10S">
+  <Period id="1" duration="PT10S">
+    <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+      <Representation id="rep-num-d" bandwidth="1000000">
+        <SegmentTemplate timescale="1000" media="chunk-$Number%d$.m4s" startNumber="1" duration="5000" />
+      </Representation>
+      <Representation id="rep-num-5d" bandwidth="2000000">
+        <SegmentTemplate timescale="1000" media="seg-$Number%5d$.m4s" startNumber="42" duration="5000" />
+      </Representation>
+      <Representation id="rep-time-04u" bandwidth="3000000">
+        <SegmentTemplate timescale="1000" media="time-$Time%04u$.m4s">
+          <SegmentTimeline>
+            <S t="5" d="2000" />
+            <S t="2000" d="3000" />
+          </SegmentTimeline>
+        </SegmentTemplate>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+
+    const parsed = parseMpd(mpdXml, 'https://example.com/dash/manifest.mpd');
+    const reps = parsed.periods[0]!.adaptations[0]!.representations;
+
+    // $Number%d$ with startNumber 1
+    const repNumD = reps.find((r) => r.id === 'rep-num-d');
+    expect(repNumD).toBeDefined();
+    expect(repNumD!.segments[0]!.url).toBe('https://example.com/dash/chunk-1.m4s');
+    expect(repNumD!.segments[1]!.url).toBe('https://example.com/dash/chunk-2.m4s');
+
+    // $Number%5d$ with startNumber 42
+    const repNum5d = reps.find((r) => r.id === 'rep-num-5d');
+    expect(repNum5d).toBeDefined();
+    expect(repNum5d!.segments[0]!.url).toBe('https://example.com/dash/seg-00042.m4s');
+    expect(repNum5d!.segments[1]!.url).toBe('https://example.com/dash/seg-00043.m4s');
+
+    // $Time%04u$ with time 5 and 2000
+    const repTime04u = reps.find((r) => r.id === 'rep-time-04u');
+    expect(repTime04u).toBeDefined();
+    expect(repTime04u!.segments[0]!.url).toBe('https://example.com/dash/time-0005.m4s');
+    expect(repTime04u!.segments[1]!.url).toBe('https://example.com/dash/time-2000.m4s');
+  });
+
+  it('extracts Initialization @_range byte range into initRange for SegmentTemplate and SegmentBase', () => {
+    const mpdXml = `<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT10S">
+  <Period id="1" duration="PT10S">
+    <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401f">
+      <Representation id="tpl-init-range" bandwidth="1000000">
+        <SegmentTemplate timescale="1000" media="chunk-$Number$.m4s" duration="5000">
+          <Initialization sourceURL="init-tpl.mp4" range="0-823" />
+        </SegmentTemplate>
+      </Representation>
+      <Representation id="base-init-range" bandwidth="2000000">
+        <BaseURL>single-file.mp4</BaseURL>
+        <SegmentBase>
+          <Initialization range="bytes=100-500" />
+        </SegmentBase>
+      </Representation>
+    </AdaptationSet>
+  </Period>
+</MPD>`;
+
+    const parsed = parseMpd(mpdXml, 'https://example.com/dash/manifest.mpd');
+    const reps = parsed.periods[0]!.adaptations[0]!.representations;
+
+    const tplRep = reps.find((r) => r.id === 'tpl-init-range');
+    expect(tplRep).toBeDefined();
+    expect(tplRep!.init).toBe('https://example.com/dash/init-tpl.mp4');
+    expect(tplRep!.initRange).toBe('0-823');
+
+    const baseRep = reps.find((r) => r.id === 'base-init-range');
+    expect(baseRep).toBeDefined();
+    expect(baseRep!.initRange).toBe('100-500');
+    expect(baseRep!.singleFile).toBe('https://example.com/dash/single-file.mp4');
   });
 });

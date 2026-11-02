@@ -66,12 +66,12 @@
       <!-- Controls Toolbar -->
       <div class="dashboard-toolbar">
         <!-- Filter Segmented Tabs -->
-        <div id="filter-tabs" class="segmented-control">
-          <button class="segment-btn active" data-filter="all">All</button>
-          <button class="segment-btn" data-filter="active">Active</button>
-          <button class="segment-btn" data-filter="queued">Queued</button>
-          <button class="segment-btn" data-filter="completed">Completed</button>
-          <button class="segment-btn" data-filter="failed">Failed</button>
+        <div id="filter-tabs" class="segmented-control" role="tablist" aria-label="Filter downloads by status">
+          <button class="segment-btn active" data-filter="all" role="tab" aria-selected="true">All</button>
+          <button class="segment-btn" data-filter="active" role="tab" aria-selected="false">Active</button>
+          <button class="segment-btn" data-filter="queued" role="tab" aria-selected="false">Queued</button>
+          <button class="segment-btn" data-filter="completed" role="tab" aria-selected="false">Completed</button>
+          <button class="segment-btn" data-filter="failed" role="tab" aria-selected="false">Failed</button>
         </div>
 
         <!-- Search & Sort -->
@@ -85,7 +85,7 @@
               id="search-input"
               type="text"
               class="glass-input"
-              placeholder="Search tasks..."
+              placeholder="Search downloads by title or site... (Press / to focus)"
               aria-label="Search downloads"
             />
           </div>

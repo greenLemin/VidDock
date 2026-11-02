@@ -114,6 +114,7 @@ export class DownloadJob {
   private keyCache = new Map<string, Promise<Buffer>>();
   private isLive = false;
   private stopped = false;
+  private abortReason?: 'pause' | 'cancel' | 'shutdown' | 'stop';
   readonly workDir: string;
 
   constructor(
@@ -163,6 +164,7 @@ export class DownloadJob {
   }
 
   abort(reason: 'pause' | 'cancel' | 'shutdown' | 'stop'): void {
+    this.abortReason = reason;
     if (reason === 'stop') this.stopped = true;
     this.controller.abort(reason);
   }
@@ -187,11 +189,15 @@ export class DownloadJob {
       this.setState('completed', { outputPath, outputBytes: size });
       this.cleanup();
     } catch (e) {
-      const reason = signal.aborted ? String(signal.reason) : undefined;
-      if (reason === 'cancel') {
+      const reason = signal.aborted ? String(signal.reason) : this.abortReason;
+      if (
+        reason === 'cancel' ||
+        this.abortReason === 'cancel' ||
+        (e instanceof AbortedError && (e.message.includes('Cancelled') || (e as unknown as { reason?: string }).reason === 'Cancelled'))
+      ) {
         this.cleanup();
         this.setState('cancelled');
-      } else if (reason === 'pause' || reason === 'shutdown') {
+      } else if (reason === 'pause' || reason === 'shutdown' || this.abortReason === 'pause' || this.abortReason === 'shutdown') {
         this.setState('paused');
       } else if (e instanceof AbortedError) {
         this.setState('paused');
@@ -243,6 +249,10 @@ export class DownloadJob {
     }
 
     const allParts: Part[] = streams.flatMap((s) => s.parts);
+    for (const part of allParts) {
+      const keyUrl = part.key?.url || (part.key as unknown as { uri?: string })?.uri;
+      this.registerKeyOrigin(client, keyUrl);
+    }
     this.tracker.segTotal = allParts.length;
     const totalDur = Math.max(0, ...plans.map((p) => p.durationSec ?? 0));
     const expectedDuration = totalDur > 0 ? totalDur : req.expectedDurationSec;
@@ -258,6 +268,9 @@ export class DownloadJob {
       try {
         await this.downloadLiveStream(streams, client, signal);
       } catch (e) {
+        if (e instanceof AbortedError && (e.message.includes('Cancelled') || this.abortReason === 'cancel')) {
+          throw e;
+        }
         if (this.isLive && (signal.aborted || this.stopped)) {
           livePreserved = true;
         } else {
@@ -269,6 +282,9 @@ export class DownloadJob {
         const { skippedParts } = await this.downloadParts(allParts, client, signal);
         totalSkipped += skippedParts.size;
       } catch (e) {
+        if (e instanceof AbortedError && (e.message.includes('Cancelled') || this.abortReason === 'cancel')) {
+          throw e;
+        }
         if (this.isLive && (signal.aborted || this.stopped)) {
           livePreserved = true;
         } else {
@@ -282,6 +298,9 @@ export class DownloadJob {
       for (const s of streams) {
         s.parts = s.parts.filter((p) => fs.existsSync(p.dest) && fs.statSync(p.dest).size > 0);
         if (s.parts.length === 0) {
+          if (this.abortReason === 'cancel' || signal.reason === 'cancel') {
+            throw new AbortedError('Cancelled');
+          }
           throw new UserFacingError('No media segments were downloaded before stopping', 'NO_SEGMENTS');
         }
       }
@@ -438,7 +457,34 @@ export class DownloadJob {
     return merged;
   }
 
+  private registerKeyOrigin(client: HttpClient, keyUrl: string | undefined): void {
+    if (!keyUrl) return;
+    try {
+      const u = new URL(keyUrl);
+      const isAllowed = this.req.tracks.some((t) => {
+        try {
+          const tu = new URL(t.url);
+          if (u.origin === tu.origin) return true;
+          const uParts = u.hostname.split('.');
+          const tuParts = tu.hostname.split('.');
+          if (uParts.length >= 2 && tuParts.length >= 2) {
+            return uParts.slice(-2).join('.') === tuParts.slice(-2).join('.');
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      });
+      if (isAllowed) {
+        (client as unknown as { cookieOrigins?: Set<string> }).cookieOrigins?.add(u.origin);
+      }
+    } catch {
+      // Ignore invalid URL
+    }
+  }
+
   private async getKey(url: string, client: HttpClient, signal: AbortSignal): Promise<Buffer> {
+    this.registerKeyOrigin(client, url);
     let p = this.keyCache.get(url);
     if (!p) {
       p = client.getBuffer({ url }, signal).then((b) => {
@@ -462,9 +508,14 @@ export class DownloadJob {
     const seenUrls = new Set<string>();
     const queue: { p: Part; i: number; s: StreamPlan }[] = [];
     const skippedParts = new Set<number>();
+    const latestPlaylistUrls = new Map<StreamPlan, Set<string>>();
     let partIndex = 0;
     let accumulatedDuration = 0;
     let pollingEnded = false;
+    let currentPollCycle = 0;
+    let downloadedSegments = 0;
+    const failureCounts = new Map<number, number>();
+    const retryQueue: { item: { p: Part; i: number; s: StreamPlan }; pollCycle: number }[] = [];
 
     for (const s of streams) {
       for (const p of s.parts) {
@@ -472,6 +523,7 @@ export class DownloadJob {
         queue.push({ p, i: partIndex++, s });
       }
       accumulatedDuration += s.durationSec ?? 0;
+      latestPlaylistUrls.set(s, new Set(s.parts.map((p) => p.url)));
     }
     this.tracker.segTotal = queue.length;
 
@@ -510,6 +562,7 @@ export class DownloadJob {
             if (s.type === 'hls') {
               const pl = parseHls(text, finalUrl);
               if (pl.type === 'media') {
+                latestPlaylistUrls.set(s, new Set(pl.segments.map((seg) => seg.url)));
                 for (const seg of pl.segments) {
                   if (!seenUrls.has(seg.url)) {
                     seenUrls.add(seg.url);
@@ -542,6 +595,7 @@ export class DownloadJob {
               const reps = period?.adaptations.flatMap((a) => a.representations) ?? [];
               const matched = (s.dashRepId ? reps.find((r) => r.id === s.dashRepId) : reps[0]) ?? reps[0];
               if (matched) {
+                latestPlaylistUrls.set(s, new Set(matched.segments.map((seg) => seg.url)));
                 for (const seg of matched.segments) {
                   if (!seenUrls.has(seg.url)) {
                     seenUrls.add(seg.url);
@@ -569,6 +623,8 @@ export class DownloadJob {
             // Ignore transient playlist poll errors
           }
         }
+        currentPollCycle++;
+        notifyWorkers();
       }
       pollingEnded = true;
       notifyWorkers();
@@ -579,10 +635,42 @@ export class DownloadJob {
 
     const worker = async () => {
       while (!signal.aborted && !this.stopped && workerFailure === undefined) {
-        if (nextQueueIdx < queue.length) {
-          const item = queue[nextQueueIdx++];
-          if (!item) continue;
-          const { p, i } = item;
+        let item: { p: Part; i: number; s: StreamPlan } | undefined;
+
+        const retryIdx = retryQueue.findIndex(
+          (r) => currentPollCycle > r.pollCycle || pollingEnded || pollController.signal.aborted,
+        );
+        if (retryIdx >= 0) {
+          const { item: rItem } = retryQueue.splice(retryIdx, 1)[0]!;
+          const playlistUrls = latestPlaylistUrls.get(rItem.s);
+          const hasAdvancedPast = playlistUrls && !playlistUrls.has(rItem.p.url);
+          if (hasAdvancedPast) {
+            const wouldSkip = skippedParts.size + 1;
+            if (wouldSkip / Math.max(1, queue.length) <= toleranceRate + 1e-9) {
+              skippedParts.add(rItem.i);
+              const partialFile = `${rItem.p.dest}.part`;
+              if (fs.existsSync(partialFile)) fs.rmSync(partialFile, { force: true });
+              this.tracker.segDone += 1;
+              this.emit();
+              continue;
+            }
+            if (workerFailure === undefined) {
+              const reason = rItem.p.isInit
+                ? 'Initialization segment is missing (HTTP 404)'
+                : `Segment ${rItem.i + 1} of ${queue.length} is missing (HTTP 404). Missing segments exceed tolerance (${Math.round(toleranceRate * 100)}%)`;
+              workerFailure = new UserFacingError(reason, 'SEGMENT_MISSING');
+            }
+            pollController.abort();
+            notifyWorkers();
+            return;
+          }
+          item = rItem;
+        } else if (nextQueueIdx < queue.length) {
+          item = queue[nextQueueIdx++];
+        }
+
+        if (item) {
+          const { p, i, s } = item;
           try {
             if (fs.existsSync(p.dest)) {
               const size = fs.statSync(p.dest).size;
@@ -601,11 +689,21 @@ export class DownloadJob {
               });
             }
             this.tracker.segDone += 1;
+            downloadedSegments += 1;
             this.emit();
           } catch (e) {
             if (signal.aborted || this.stopped || e instanceof AbortedError) return;
             const is404 = e instanceof HttpError && e.status === 404;
             if (is404 && !p.isInit) {
+              const isHead = s.parts.length > 0 && s.parts[s.parts.length - 1] === p;
+              const fails = (failureCounts.get(i) ?? 0) + 1;
+              failureCounts.set(i, fails);
+
+              if (isHead && fails === 1 && !pollingEnded && !pollController.signal.aborted) {
+                retryQueue.push({ item, pollCycle: currentPollCycle });
+                continue;
+              }
+
               const wouldSkip = skippedParts.size + 1;
               if (wouldSkip / Math.max(1, queue.length) <= toleranceRate + 1e-9) {
                 skippedParts.add(i);
@@ -631,6 +729,9 @@ export class DownloadJob {
             return;
           }
         } else if (pollingEnded || pollController.signal.aborted) {
+          if (retryQueue.length > 0) {
+            continue;
+          }
           return;
         } else {
           await new Promise<void>((res) => {
@@ -639,6 +740,7 @@ export class DownloadJob {
               pollingEnded ||
               pollController.signal.aborted ||
               nextQueueIdx < queue.length ||
+              retryQueue.some((r) => currentPollCycle > r.pollCycle) ||
               signal.aborted ||
               this.stopped ||
               workerFailure !== undefined
@@ -661,6 +763,10 @@ export class DownloadJob {
       signal.removeEventListener('abort', onSignalAbort);
       notifyWorkers();
       await Promise.allSettled([pollerPromise, workers]);
+    }
+
+    if (this.abortReason === 'cancel' && downloadedSegments === 0) {
+      throw new AbortedError('Cancelled');
     }
 
     if (workerFailure !== undefined && !this.stopped && !signal.aborted) {

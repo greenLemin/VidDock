@@ -16,6 +16,7 @@ export class SettingsController {
   private settings: Settings = { ...DEFAULT_SETTINGS };
   private nativeStatus: NativeStatus = { connected: false };
   private selectedMediasiteLayout: DualStreamLayout = 'side-by-side';
+  private saveToastTimer: ReturnType<typeof setTimeout> | null = null;
 
   async init(): Promise<void> {
     this.bindEvents();
@@ -32,15 +33,65 @@ export class SettingsController {
     });
 
     // Theme Mode Segmented Control
-    document.querySelectorAll('#theme-segmented .segment-btn').forEach((btn) => {
+    const themeButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('#theme-segmented .segment-btn')
+    );
+    themeButtons.forEach((btn, index) => {
       btn.addEventListener('click', (e) => {
-        const target = e.currentTarget as HTMLElement;
+        const target = (e.currentTarget || btn) as HTMLElement;
         const theme = target.getAttribute('data-theme') as 'system' | 'light' | 'dark';
         if (!theme) return;
 
         this.applyTheme(theme);
         this.savePartialSettings({ theme });
       });
+
+      btn.addEventListener('keydown', (e: Event) => {
+        const keyEvent = e as KeyboardEvent;
+        let targetIndex = -1;
+        if (keyEvent.key === 'ArrowRight' || keyEvent.key === 'ArrowDown') {
+          targetIndex = (index + 1) % themeButtons.length;
+        } else if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp') {
+          targetIndex = (index - 1 + themeButtons.length) % themeButtons.length;
+        }
+
+        if (targetIndex >= 0) {
+          keyEvent.preventDefault?.();
+          const targetBtn = themeButtons[targetIndex];
+          targetBtn?.focus?.();
+          if (typeof targetBtn?.click === 'function') {
+            targetBtn.click();
+          } else if (typeof targetBtn?.dispatchEvent === 'function') {
+            const evt = typeof Event !== 'undefined' ? new Event('click') : ({ type: 'click' } as unknown as Event);
+            targetBtn.dispatchEvent(evt);
+          }
+        }
+      });
+    });
+
+    const themeSegmented = document.getElementById('theme-segmented');
+    themeSegmented?.addEventListener('keydown', (e: Event) => {
+      const keyEvent = e as KeyboardEvent;
+      if (keyEvent.defaultPrevented || !themeButtons.length) return;
+      let targetIndex = -1;
+      const activeIdx = themeButtons.findIndex((b) => b.classList.contains('active'));
+      const currentIdx = activeIdx >= 0 ? activeIdx : 0;
+      if (keyEvent.key === 'ArrowRight' || keyEvent.key === 'ArrowDown') {
+        targetIndex = (currentIdx + 1) % themeButtons.length;
+      } else if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp') {
+        targetIndex = (currentIdx - 1 + themeButtons.length) % themeButtons.length;
+      }
+      if (targetIndex >= 0) {
+        keyEvent.preventDefault?.();
+        const targetBtn = themeButtons[targetIndex];
+        targetBtn?.focus?.();
+        if (typeof targetBtn?.click === 'function') {
+          targetBtn.click();
+        } else if (typeof targetBtn?.dispatchEvent === 'function') {
+          const evt = typeof Event !== 'undefined' ? new Event('click') : ({ type: 'click' } as unknown as Event);
+          targetBtn.dispatchEvent(evt);
+        }
+      }
     });
 
     // Preferred Quality
@@ -82,24 +133,78 @@ export class SettingsController {
     });
 
     // Mediasite Layout Segmented Control
-    document.querySelectorAll('#mediasite-layout-segmented .segment-btn').forEach((btn) => {
+    const layoutButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('#mediasite-layout-segmented .segment-btn')
+    );
+    layoutButtons.forEach((btn, index) => {
       btn.addEventListener('click', (e) => {
-        const target = e.currentTarget as HTMLElement;
+        const target = (e.currentTarget || btn) as HTMLElement;
         const layout = target.getAttribute('data-layout') as DualStreamLayout;
         if (!layout) return;
 
-        this.selectedMediasiteLayout = layout;
-        document
-          .querySelectorAll('#mediasite-layout-segmented .segment-btn')
-          .forEach((b) => b.classList.remove('active'));
-        target.classList.add('active');
+        this.applyMediasiteLayout(layout);
         this.savePartialSettings({ dualStreamLayout: layout });
       });
+
+      btn.addEventListener('keydown', (e: Event) => {
+        const keyEvent = e as KeyboardEvent;
+        let targetIndex = -1;
+        if (keyEvent.key === 'ArrowRight' || keyEvent.key === 'ArrowDown') {
+          targetIndex = (index + 1) % layoutButtons.length;
+        } else if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp') {
+          targetIndex = (index - 1 + layoutButtons.length) % layoutButtons.length;
+        }
+
+        if (targetIndex >= 0) {
+          keyEvent.preventDefault?.();
+          const targetBtn = layoutButtons[targetIndex];
+          targetBtn?.focus?.();
+          if (typeof targetBtn?.click === 'function') {
+            targetBtn.click();
+          } else if (typeof targetBtn?.dispatchEvent === 'function') {
+            const evt = typeof Event !== 'undefined' ? new Event('click') : ({ type: 'click' } as unknown as Event);
+            targetBtn.dispatchEvent(evt);
+          }
+        }
+      });
+    });
+
+    const layoutSegmented = document.getElementById('mediasite-layout-segmented');
+    layoutSegmented?.addEventListener('keydown', (e: Event) => {
+      const keyEvent = e as KeyboardEvent;
+      if (keyEvent.defaultPrevented || !layoutButtons.length) return;
+      let targetIndex = -1;
+      const activeIdx = layoutButtons.findIndex((b) => b.classList.contains('active'));
+      const currentIdx = activeIdx >= 0 ? activeIdx : 0;
+      if (keyEvent.key === 'ArrowRight' || keyEvent.key === 'ArrowDown') {
+        targetIndex = (currentIdx + 1) % layoutButtons.length;
+      } else if (keyEvent.key === 'ArrowLeft' || keyEvent.key === 'ArrowUp') {
+        targetIndex = (currentIdx - 1 + layoutButtons.length) % layoutButtons.length;
+      }
+      if (targetIndex >= 0) {
+        keyEvent.preventDefault?.();
+        const targetBtn = layoutButtons[targetIndex];
+        targetBtn?.focus?.();
+        if (typeof targetBtn?.click === 'function') {
+          targetBtn.click();
+        } else if (typeof targetBtn?.dispatchEvent === 'function') {
+          const evt = typeof Event !== 'undefined' ? new Event('click') : ({ type: 'click' } as unknown as Event);
+          targetBtn.dispatchEvent(evt);
+        }
+      }
     });
 
     // Filename Template Input
     const templateInput = document.getElementById('filename-template-input') as HTMLInputElement;
+    let templateInputFocused = false;
+    templateInput?.addEventListener('focus', () => {
+      templateInputFocused = true;
+    });
+    templateInput?.addEventListener('click', () => {
+      templateInputFocused = true;
+    });
     templateInput?.addEventListener('input', () => {
+      templateInputFocused = true;
       this.updateTemplatePreview(templateInput.value);
       this.savePartialSettings({ filenameTemplate: templateInput.value });
     });
@@ -111,11 +216,40 @@ export class SettingsController {
         const token = target.getAttribute('data-token');
         if (!token || !templateInput) return;
 
-        templateInput.value += ` - ${token}`;
+        const start = templateInput.selectionStart;
+        const end = templateInput.selectionEnd;
+        if (templateInputFocused && start !== null && typeof start === 'number') {
+          const validEnd = typeof end === 'number' ? end : start;
+          const current = templateInput.value;
+          templateInput.value = current.slice(0, start) + token + current.slice(validEnd);
+          const newPos = start + token.length;
+          templateInput.setSelectionRange?.(newPos, newPos);
+        } else {
+          const current = templateInput.value;
+          templateInput.value = current ? `${current} - ${token}` : token;
+        }
+
         this.updateTemplatePreview(templateInput.value);
         this.savePartialSettings({ filenameTemplate: templateInput.value });
       });
     });
+
+    // Copy Companion Install Command Button
+    const copyCmdBtn = document.getElementById('btn-copy-install-cmd');
+    if (copyCmdBtn && !copyCmdBtn.hasAttribute('data-bound')) {
+      copyCmdBtn.setAttribute('data-bound', 'true');
+      copyCmdBtn.addEventListener('click', async () => {
+        const cmdEl = document.getElementById('companion-install-cmd');
+        const textToCopy = cmdEl?.textContent || '';
+        try {
+          await navigator.clipboard.writeText(textToCopy);
+        } catch {}
+        copyCmdBtn.textContent = 'Copied!';
+        setTimeout(() => {
+          copyCmdBtn.textContent = 'Copy';
+        }, 1500);
+      });
+    }
 
     // Clear Cache Button
     const clearBtn = document.getElementById('btn-clear-cache') as HTMLButtonElement | null;
@@ -188,7 +322,18 @@ export class SettingsController {
     } catch {}
 
     document.querySelectorAll('#theme-segmented .segment-btn').forEach((b) => {
-      b.classList.toggle('active', b.getAttribute('data-theme') === theme);
+      const active = b.getAttribute('data-theme') === theme;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+  }
+
+  private applyMediasiteLayout(layout: DualStreamLayout): void {
+    this.selectedMediasiteLayout = layout;
+    document.querySelectorAll('#mediasite-layout-segmented .segment-btn').forEach((b) => {
+      const active = b.getAttribute('data-layout') === layout;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', active ? 'true' : 'false');
     });
   }
 
@@ -254,10 +399,20 @@ export class SettingsController {
 
     // Mediasite Layout
     const layout = this.settings.dualStreamLayout || 'side-by-side';
-    this.selectedMediasiteLayout = layout;
-    document.querySelectorAll('#mediasite-layout-segmented .segment-btn').forEach((b) => {
-      b.classList.toggle('active', b.getAttribute('data-layout') === layout);
-    });
+    this.applyMediasiteLayout(layout);
+  }
+
+  private showSaveToast(): void {
+    const toast = document.getElementById('settings-save-toast');
+    if (!toast) return;
+    toast.classList.remove('hidden');
+    if (this.saveToastTimer) {
+      clearTimeout(this.saveToastTimer);
+    }
+    this.saveToastTimer = setTimeout(() => {
+      toast.classList.add('hidden');
+      this.saveToastTimer = null;
+    }, 1500);
   }
 
   private async savePartialSettings(partial: Partial<Settings>): Promise<void> {
@@ -267,6 +422,7 @@ export class SettingsController {
         type: 'setSettings',
         settings: partial,
       });
+      this.showSaveToast();
     } catch {}
   }
 
@@ -304,6 +460,21 @@ export class SettingsController {
             copyBtn.textContent = 'Copy ID';
           }, 1500);
         }
+      });
+    }
+
+    const copyCmdBtn = document.getElementById('btn-copy-install-cmd');
+    if (copyCmdBtn && !copyCmdBtn.hasAttribute('data-bound')) {
+      copyCmdBtn.setAttribute('data-bound', 'true');
+      copyCmdBtn.addEventListener('click', async () => {
+        const textToCopy = cmdEl?.textContent || '';
+        try {
+          await navigator.clipboard.writeText(textToCopy);
+        } catch {}
+        copyCmdBtn.textContent = 'Copied!';
+        setTimeout(() => {
+          copyCmdBtn.textContent = 'Copy';
+        }, 1500);
       });
     }
   }

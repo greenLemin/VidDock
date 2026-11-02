@@ -4,6 +4,40 @@ import { isMediasiteUrl } from '@viddock/shared';
 (function initMediasiteDetector() {
   let reported = false;
 
+  function extractBalancedJson(text: string, startIndex: number): string | null {
+    if (text[startIndex] !== '{') return null;
+    let depth = 0;
+    let inString = false;
+    let stringChar = '';
+    let escape = false;
+
+    for (let i = startIndex; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escape) {
+          escape = false;
+        } else if (ch === '\\') {
+          escape = true;
+        } else if (ch === stringChar) {
+          inString = false;
+        }
+      } else {
+        if (ch === '"' || ch === "'") {
+          inString = true;
+          stringChar = ch;
+        } else if (ch === '{') {
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            return text.slice(startIndex, i + 1);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   function scanMediasitePlayer() {
     if (reported) return;
 
@@ -23,6 +57,32 @@ import { isMediasiteUrl } from '@viddock/shared';
         text.includes('MediasitePlayerConfiguration') ||
         text.includes('"Presentation"')
       ) {
+        // Try balanced-brace extraction around "Presentation" matches
+        const presRegex = /["']?Presentation["']?/g;
+        let presMatch: RegExpExecArray | null;
+        while ((presMatch = presRegex.exec(text)) !== null) {
+          const presIdx = presMatch.index;
+          for (let i = presIdx - 1; i >= 0; i--) {
+            if (text[i] === '{') {
+              const candidate = extractBalancedJson(text, i);
+              if (candidate && i + candidate.length > presIdx) {
+                try {
+                  const parsed = JSON.parse(candidate);
+                  if (
+                    parsed &&
+                    typeof parsed === 'object' &&
+                    ('Presentation' in (parsed as Record<string, unknown>) ||
+                      Boolean((parsed as { d?: { Presentation?: unknown } })?.d?.Presentation))
+                  ) {
+                    reportOptions(parsed);
+                    return;
+                  }
+                } catch {}
+              }
+            }
+          }
+        }
+
         // Try extracting JSON payload
         const jsonMatch = text.match(/\{["']?Presentation["']?\s*:\s*\{[\s\S]*?\}\s*\}\s*\}/);
         if (jsonMatch) {

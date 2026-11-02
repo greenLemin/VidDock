@@ -365,8 +365,11 @@ export class TaskCoordinator {
     layout?: DualStreamLayout,
   ): Promise<{ taskId: string }> {
     const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const isAudioOnly =
+      (params as { selectedQuality?: string }).selectedQuality === 'audio-only' ||
+      params.qualityId === 'audio-only';
     const selectedQuality = item.qualities.find((q) => q.id === params.qualityId) ?? item.qualities[0];
-    const qualityLabel = selectedQuality?.label || 'Default';
+    const qualityLabel = isAudioOnly ? 'Audio' : selectedQuality?.label || 'Default';
     const safeBaseName = applyFilenameTemplate(this.settings.filenameTemplate, {
       title: item.title,
       quality: qualityLabel,
@@ -376,7 +379,8 @@ export class TaskCoordinator {
 
     // Determine engine
     const isDirect = item.kind === 'direct';
-    const engine: 'chrome' | 'native' = isDirect && this.settings.directViaChrome ? 'chrome' : 'native';
+    const engine: 'chrome' | 'native' =
+      !isAudioOnly && isDirect && this.settings.directViaChrome ? 'chrome' : 'native';
 
     if (engine === 'chrome' && typeof chrome !== 'undefined' && chrome.downloads) {
       let ext = 'mp4';
@@ -434,7 +438,36 @@ export class TaskCoordinator {
     } catch {}
 
     const tracks: NativeTrack[] = [];
-    if (item.kind === 'hls') {
+    if (isAudioOnly && item.audioTracks && item.audioTracks.length > 0) {
+      const primaryAudio =
+        item.audioTracks.find((a) => a.id === params.audioId) ||
+        item.audioTracks.find((a) => a.isDefault) ||
+        item.audioTracks[0]!;
+      const audioUrl = primaryAudio.ref || item.url;
+      if (item.kind === 'hls') {
+        tracks.push({
+          type: 'hls',
+          url: audioUrl,
+          label: 'Audio',
+          kind: 'audio',
+        } as unknown as NativeTrack);
+      } else if (item.kind === 'dash') {
+        tracks.push({
+          type: 'dash',
+          url: audioUrl.startsWith('http') ? audioUrl : item.url,
+          audioRepId: primaryAudio.ref,
+          label: 'Audio',
+          kind: 'audio',
+        } as unknown as NativeTrack);
+      } else {
+        tracks.push({
+          type: 'direct',
+          url: audioUrl,
+          label: 'Audio',
+          kind: 'audio',
+        } as unknown as NativeTrack);
+      }
+    } else if (item.kind === 'hls') {
       tracks.push({
         type: 'hls',
         url: item.url,
@@ -469,7 +502,7 @@ export class TaskCoordinator {
       title: item.title,
       fileName: safeBaseName,
       outputDir: this.settings.outputDir || undefined,
-      container: params.container || this.settings.container,
+      container: isAudioOnly ? (params.container || 'auto') : (params.container || this.settings.container),
       tracks,
       subtitles,
       subtitleMode: this.settings.subtitleMode,

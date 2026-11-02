@@ -12,6 +12,10 @@ export class TaskManager {
 
   constructor(private readonly ctx: Omit<JobContext, 'onUpdate'> & { onUpdate: (t: TaskInfo) => void }) {}
 
+  get workRoot(): string {
+    return this.ctx.workRoot;
+  }
+
   list(): TaskInfo[] {
     return [...this.jobs.values()].map((j) => j.info);
   }
@@ -55,14 +59,16 @@ export class TaskManager {
     return job.info;
   }
 
-  cancel(taskId: string): TaskInfo {
-    const job = this.require(taskId);
+  cancel(id: string): TaskInfo {
+    const job = this.require(id);
     if (isActive(job.state)) job.abort('cancel');
     else if (job.state === 'queued' || job.state === 'paused') {
       job.cleanup();
       job.info = { ...job.info, state: 'cancelled', updatedAt: Date.now() };
       this.ctx.onUpdate(job.info);
     }
+    const dir = path.join(this.workRoot, id);
+    fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
     return job.info;
   }
 

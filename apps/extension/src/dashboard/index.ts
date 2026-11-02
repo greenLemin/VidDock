@@ -45,24 +45,120 @@ export class DashboardController {
 
   private bindEvents(): void {
     // Filter Tabs
-    document.querySelectorAll('#filter-tabs .segment-btn').forEach((btn) => {
+    const filterButtons = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('#filter-tabs .segment-btn'),
+    );
+    filterButtons.forEach((btn, index) => {
       btn.addEventListener('click', (e) => {
         const target = e.currentTarget as HTMLElement;
         const filter = target.getAttribute('data-filter') as typeof this.currentFilter;
         if (!filter) return;
         this.currentFilter = filter;
 
-        document.querySelectorAll('#filter-tabs .segment-btn').forEach((b) => b.classList.remove('active'));
-        target.classList.add('active');
+        document.querySelectorAll('#filter-tabs .segment-btn').forEach((b) => {
+          const isActive = b === target;
+          if (isActive) {
+            b.classList.add('active');
+            b.setAttribute('aria-selected', 'true');
+          } else {
+            b.classList.remove('active');
+            b.setAttribute('aria-selected', 'false');
+          }
+        });
         this.renderTasks();
+      });
+
+      btn.addEventListener('keydown', (e: Event) => {
+        const ke = e as KeyboardEvent;
+        let targetIndex = -1;
+        if (ke.key === 'ArrowRight') {
+          targetIndex = (index + 1) % filterButtons.length;
+        } else if (ke.key === 'ArrowLeft') {
+          targetIndex = (index - 1 + filterButtons.length) % filterButtons.length;
+        }
+
+        if (targetIndex !== -1) {
+          ke.preventDefault?.();
+          const targetBtn = filterButtons[targetIndex];
+          targetBtn?.focus?.();
+          if (typeof targetBtn?.click === 'function') {
+            targetBtn.click();
+          } else {
+            targetBtn?.dispatchEvent?.(new Event('click'));
+          }
+        }
       });
     });
 
+    const filterTabsContainer = document.getElementById('filter-tabs');
+    filterTabsContainer?.addEventListener('keydown', (e: Event) => {
+      const ke = e as KeyboardEvent;
+      if (ke.key !== 'ArrowRight' && ke.key !== 'ArrowLeft') return;
+      if (ke.defaultPrevented) return;
+
+      const buttons = Array.from(
+        document.querySelectorAll<HTMLButtonElement>('#filter-tabs .segment-btn'),
+      );
+      if (buttons.length === 0) return;
+
+      const currentIdx = buttons.findIndex(
+        (b) => b === ke.target || b === document.activeElement || b.classList.contains('active'),
+      );
+      let targetIndex = 0;
+      if (currentIdx >= 0) {
+        if (ke.key === 'ArrowRight') {
+          targetIndex = (currentIdx + 1) % buttons.length;
+        } else if (ke.key === 'ArrowLeft') {
+          targetIndex = (currentIdx - 1 + buttons.length) % buttons.length;
+        }
+      }
+
+      ke.preventDefault?.();
+      const targetBtn = buttons[targetIndex];
+      targetBtn?.focus?.();
+      if (typeof targetBtn?.click === 'function') {
+        targetBtn.click();
+      } else {
+        targetBtn?.dispatchEvent?.(new Event('click'));
+      }
+    });
+
     // Search Input
-    const searchInput = document.getElementById('search-input') as HTMLInputElement;
+    const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
     searchInput?.addEventListener('input', () => {
       this.searchQuery = searchInput.value.trim().toLowerCase();
       this.renderTasks();
+    });
+
+    // Keyboard Shortcuts
+    document.addEventListener('keydown', (e: Event) => {
+      const ke = e as KeyboardEvent;
+      const activeEl = document.activeElement;
+      const targetEl = ke.target as HTMLElement | null;
+
+      if (ke.key === 'Escape') {
+        const isSearchFocused = activeEl === searchInput || targetEl === searchInput;
+        if (isSearchFocused) {
+          if (searchInput) {
+            searchInput.value = '';
+          }
+          this.searchQuery = '';
+          this.renderTasks();
+          searchInput?.blur?.();
+          return;
+        }
+      }
+
+      if (ke.key === '/' && !ke.ctrlKey && !ke.metaKey && !ke.altKey) {
+        const activeTag = (activeEl?.tagName || targetEl?.tagName || '').toLowerCase();
+        const isInputFocused =
+          activeTag === 'input' || activeTag === 'select' || activeTag === 'textarea';
+
+        if (!isInputFocused) {
+          ke.preventDefault?.();
+          searchInput?.focus?.();
+        }
+      }
     });
 
     // Sort Dropdown

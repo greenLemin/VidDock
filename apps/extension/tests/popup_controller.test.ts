@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { NativeStatus } from '@viddock/shared';
+import type { MediaItem, NativeStatus, PopupState } from '@viddock/shared';
 import { PopupController } from '../src/popup/index.ts';
 import { setupChromeMock } from './mocks/chrome.ts';
 
@@ -15,6 +15,11 @@ interface MockElement {
   className: string;
   textContent: string;
   title: string;
+  disabled?: boolean;
+  value?: string;
+  selected?: boolean;
+  style: Record<string, string>;
+  children: MockElement[];
   attributes: Map<string, string>;
   listeners: Map<string, ((e?: unknown) => void)[]>;
   classList: {
@@ -25,14 +30,57 @@ interface MockElement {
   };
   getAttribute: (name: string) => string | null;
   setAttribute: (name: string, value: string) => void;
+  hasAttribute: (name: string) => boolean;
+  removeAttribute: (name: string) => void;
+  appendChild: (child: MockElement) => MockElement;
+  removeChild: (child: MockElement) => MockElement;
+  querySelector: (sel: string) => MockElement | null;
+  querySelectorAll: (sel: string) => MockElement[];
   addEventListener: (event: string, fn: (e?: unknown) => void) => void;
-  dispatchEvent: (event: { type: string; preventDefault?: () => void }) => void;
+  dispatchEvent: (event: { type: string; preventDefault?: () => void; [key: string]: unknown }) => void;
+  innerHTML: string;
+  click?: () => void;
+  focus?: () => void;
+}
+
+function matchesSelector(el: MockElement, sel: string): boolean {
+  if (sel === '*') return true;
+  if (sel.includes(':not(')) {
+    const m = /^(.*?):not\((.*?)\)$/.exec(sel);
+    if (m) {
+      const baseSel = m[1]?.trim();
+      const notSel = m[2]?.trim();
+      if (baseSel && !matchesSelector(el, baseSel)) return false;
+      if (notSel && matchesSelector(el, notSel)) return false;
+      return true;
+    }
+  }
+  if (sel.startsWith('#')) return el.id === sel.slice(1);
+  if (sel.startsWith('.')) return el.classList.contains(sel.slice(1));
+  if (sel.includes('.')) {
+    const [tag, ...classes] = sel.split('.');
+    if (tag && el.tagName.toLowerCase() !== tag.toLowerCase()) return false;
+    return classes.every((c) => el.classList.contains(c));
+  }
+  if (sel.startsWith('[') && sel.endsWith(']')) {
+    const attrExp = sel.slice(1, -1);
+    if (attrExp.includes('=')) {
+      const [attrName, rawVal] = attrExp.split('=');
+      const val = (rawVal ?? '').replace(/^["']|["']$/g, '');
+      return el.getAttribute(attrName ?? '') === val;
+    }
+    return el.getAttribute(attrExp) !== null;
+  }
+  return el.tagName.toLowerCase() === sel.toLowerCase();
 }
 
 function createMockElement(id = '', tagName = 'div'): MockElement {
   let classes = new Set<string>();
   const attributes = new Map<string, string>();
   const listeners = new Map<string, ((e?: unknown) => void)[]>();
+  const children: MockElement[] = [];
+  const style: Record<string, string> = {};
+  let innerHtml = '';
 
   const el: MockElement = {
     id,
@@ -45,6 +93,8 @@ function createMockElement(id = '', tagName = 'div'): MockElement {
     },
     textContent: '',
     title: '',
+    style,
+    children,
     attributes,
     listeners,
     classList: {
@@ -70,15 +120,57 @@ function createMockElement(id = '', tagName = 'div'): MockElement {
     },
     getAttribute: (name: string) => attributes.get(name) ?? null,
     setAttribute: (name: string, value: string) => attributes.set(name, value),
+    hasAttribute: (name: string) => attributes.has(name),
+    removeAttribute: (name: string) => {
+      attributes.delete(name);
+    },
+    appendChild: (child: MockElement) => {
+      children.push(child);
+      return child;
+    },
+    removeChild: (child: MockElement) => {
+      const idx = children.indexOf(child);
+      if (idx >= 0) children.splice(idx, 1);
+      return child;
+    },
+    querySelector: (sel: string): MockElement | null => {
+      for (const child of children) {
+        if (matchesSelector(child, sel)) return child;
+        const nested = child.querySelector(sel);
+        if (nested) return nested;
+      }
+      return null;
+    },
+    querySelectorAll: (sel: string): MockElement[] => {
+      const matches: MockElement[] = [];
+      for (const child of children) {
+        if (matchesSelector(child, sel)) matches.push(child);
+        matches.push(...child.querySelectorAll(sel));
+      }
+      return matches;
+    },
     addEventListener: (event: string, fn: (e?: unknown) => void) => {
       const list = listeners.get(event) || [];
       list.push(fn);
       listeners.set(event, list);
     },
-    dispatchEvent: (event: { type: string; preventDefault?: () => void }) => {
+    dispatchEvent: (event: { type: string; preventDefault?: () => void; [key: string]: unknown }) => {
       const list = listeners.get(event.type) || [];
       for (const fn of list) fn(event);
     },
+    get innerHTML() {
+      return innerHtml;
+    },
+    set innerHTML(val: string) {
+      innerHtml = val;
+      if (val === '') {
+        children.length = 0;
+      }
+    },
+    click: () => {
+      el.dispatchEvent({ type: 'click' });
+    },
+    focus: () => {},
   };
 
   return el;
@@ -86,9 +178,11 @@ function createMockElement(id = '', tagName = 'div'): MockElement {
 
 describe('Popup Controller & Host Warning Tests', () => {
   const elements = new Map<string, MockElement>();
+  const docListeners = new Map<string, ((e?: unknown) => void)[]>();
 
   beforeEach(() => {
     elements.clear();
+    docListeners.clear();
 
     const ids = [
       'popup-root',
@@ -100,6 +194,7 @@ describe('Popup Controller & Host Warning Tests', () => {
       'btn-open-settings',
       'btn-refresh-media',
       'btn-empty-rescan',
+      'btn-download-all',
       'dock-view-all',
       'media-count',
       'media-list',
@@ -108,18 +203,51 @@ describe('Popup Controller & Host Warning Tests', () => {
       'dock-task-count',
       'dock-task-speed',
       'dock-progress-fill',
+      'onboarding-modal',
+      'btn-onboarding-dismiss',
     ];
 
     for (const id of ids) {
-      elements.set(id, createMockElement(id));
+      const el = createMockElement(id);
+      if (id === 'btn-download-all' || id === 'ffmpeg-warning-banner' || id === 'empty-state') {
+        el.classList.add('hidden');
+      }
+      if (id === 'onboarding-modal') {
+        el.classList.add('hidden');
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-modal', 'true');
+      }
+      elements.set(id, el);
     }
 
     const mockDocument = {
       getElementById: (id: string) => elements.get(id) || null,
-      querySelectorAll: () => [],
-      querySelector: () => null,
+      querySelectorAll: (sel: string) => {
+        const matches: MockElement[] = [];
+        for (const el of elements.values()) {
+          if (matchesSelector(el, sel)) matches.push(el);
+          matches.push(...el.querySelectorAll(sel));
+        }
+        return matches;
+      },
+      querySelector: (sel: string) => {
+        for (const el of elements.values()) {
+          if (matchesSelector(el, sel)) return el;
+          const found = el.querySelector(sel);
+          if (found) return found;
+        }
+        return null;
+      },
       createElement: (tag: string) => createMockElement('', tag),
-      addEventListener: () => {},
+      addEventListener: (event: string, fn: (e?: unknown) => void) => {
+        const list = docListeners.get(event) || [];
+        list.push(fn);
+        docListeners.set(event, list);
+      },
+      dispatchEvent: (event: { type: string; preventDefault?: () => void; [key: string]: unknown }) => {
+        const list = docListeners.get(event.type) || [];
+        for (const fn of list) fn(event);
+      },
     };
 
     (globalThis as unknown as { document: unknown }).document = mockDocument;
@@ -180,5 +308,168 @@ describe('Popup Controller & Host Warning Tests', () => {
     expect(htmlContent).toContain('id="ffmpeg-warning-banner"');
     expect(htmlContent).toContain('id="link-setup-ffmpeg"');
     expect(htmlContent).toContain('FFmpeg not found');
+  });
+
+  it('shows #btn-download-all when 2+ media streams are present and queues downloads on click', async () => {
+    const controller = new PopupController();
+    const btnDownloadAll = elements.get('btn-download-all')!;
+
+    // 1 item: button remains hidden
+    const singleItemState: Partial<PopupState> = {
+      items: [
+        {
+          id: 'item-1',
+          url: 'https://example.com/stream1.m3u8',
+          pageUrl: 'https://example.com',
+          tabId: 1,
+          title: 'Video 1',
+          kind: 'hls',
+          source: 'network',
+          hasVideo: true,
+          hasAudio: true,
+          qualities: [],
+          audioTracks: [],
+          subtitles: [],
+          detectedAt: Date.now(),
+        },
+      ],
+      tasks: [],
+    };
+    (controller as unknown as { state: PopupState }).state = singleItemState as PopupState;
+    (controller as unknown as { renderMediaList: () => void })['renderMediaList']();
+
+    expect(btnDownloadAll.classList.contains('hidden')).toBe(true);
+
+    // 2 items: button becomes visible
+    const multiItemState: Partial<PopupState> = {
+      items: [
+        {
+          id: 'item-1',
+          url: 'https://example.com/stream1.m3u8',
+          pageUrl: 'https://example.com',
+          tabId: 1,
+          title: 'Video 1',
+          kind: 'hls',
+          source: 'network',
+          hasVideo: true,
+          hasAudio: true,
+          qualities: [],
+          audioTracks: [],
+          subtitles: [],
+          detectedAt: Date.now(),
+        },
+        {
+          id: 'item-2',
+          url: 'https://example.com/stream2.mp4',
+          pageUrl: 'https://example.com',
+          tabId: 1,
+          title: 'Video 2',
+          kind: 'direct',
+          source: 'network',
+          hasVideo: true,
+          hasAudio: true,
+          qualities: [],
+          audioTracks: [],
+          subtitles: [],
+          detectedAt: Date.now(),
+        },
+      ],
+      tasks: [],
+    };
+    (controller as unknown as { state: PopupState }).state = multiItemState as PopupState;
+    (controller as unknown as { renderMediaList: () => void })['renderMediaList']();
+
+    expect(btnDownloadAll.classList.contains('hidden')).toBe(false);
+
+    // Click triggers queueing downloads
+    const sendSpy = vi.spyOn(chrome.runtime, 'sendMessage');
+    btnDownloadAll.dispatchEvent({ type: 'click' });
+
+    await vi.waitFor(() => {
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startDownload',
+          params: expect.objectContaining({ itemId: 'item-1' }),
+        }),
+      );
+      expect(sendSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'startDownload',
+          params: expect.objectContaining({ itemId: 'item-2' }),
+        }),
+      );
+    });
+  });
+
+  it('includes Audio Only (M4A) option in quality selector for video streams', () => {
+    const controller = new PopupController();
+    const videoItem: MediaItem = {
+      id: 'video-stream',
+      url: 'https://example.com/video.mp4',
+      pageUrl: 'https://example.com',
+      tabId: 1,
+      title: 'Sample Video Track',
+      kind: 'direct',
+      source: 'network',
+      hasVideo: true,
+      hasAudio: true,
+      qualities: [
+        { id: '1080p', label: '1080p', ref: 'https://example.com/1080p.mp4' },
+        { id: '720p', label: '720p', ref: 'https://example.com/720p.mp4' },
+      ],
+      audioTracks: [],
+      subtitles: [],
+      detectedAt: Date.now(),
+    };
+
+    const card = (controller as unknown as { createMediaCard: (item: MediaItem) => MockElement })['createMediaCard'](
+      videoItem,
+    );
+
+    const select = card.querySelector('select.select-apple');
+    expect(select).not.toBeNull();
+
+    const options = select!.querySelectorAll('option');
+    const audioOnlyOpt = options.find((opt) => opt.value === 'audio-only');
+
+    expect(audioOnlyOpt).toBeDefined();
+    expect(audioOnlyOpt?.textContent).toBe('Audio Only (M4A)');
+  });
+
+  it('verifies #onboarding-modal has role="dialog" and aria-modal="true", and Escape dismisses it', async () => {
+    const htmlPath = path.resolve(__dirname, '../src/popup/index.html');
+    const htmlContent = fs.readFileSync(htmlPath, 'utf8');
+
+    expect(htmlContent).toMatch(/<div[^>]*id="onboarding-modal"[^>]*role="dialog"/);
+    expect(htmlContent).toMatch(/<div[^>]*id="onboarding-modal"[^>]*aria-modal="true"/);
+
+    const modal = elements.get('onboarding-modal')!;
+    expect(modal.getAttribute('role')).toBe('dialog');
+    expect(modal.getAttribute('aria-modal')).toBe('true');
+
+    const controller = new PopupController();
+    (controller as unknown as { bindStaticEvents: () => void })['bindStaticEvents']();
+
+    // Modal is initially shown
+    modal.classList.remove('hidden');
+    expect(modal.classList.contains('hidden')).toBe(false);
+
+    // Escape dismisses modal
+    let defaultPrevented = false;
+    (globalThis as unknown as { document: { dispatchEvent: (e: unknown) => void } }).document.dispatchEvent({
+      type: 'keydown',
+      key: 'Escape',
+      preventDefault: () => {
+        defaultPrevented = true;
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(modal.classList.contains('hidden')).toBe(true);
+    });
+    expect(defaultPrevented).toBe(true);
+
+    const stored = await chrome.storage.local.get('hasSeenOnboarding');
+    expect(stored.hasSeenOnboarding).toBe(true);
   });
 });

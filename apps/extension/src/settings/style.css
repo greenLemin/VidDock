@@ -51,6 +51,36 @@ body {
   margin: 0;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Save Toast Badge */
+.save-toast,
+.settings-header .save-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  color: var(--status-green);
+  background: var(--status-green-bg);
+  border: 1px solid rgba(52, 199, 89, 0.25);
+  box-shadow: 0 0 6px rgba(52, 199, 89, 0.2);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.save-toast.hidden,
+.save-toast.fade-out {
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+}
+
 .settings-main {
   display: flex;
   flex-direction: column;
@@ -303,4 +333,42 @@ input:checked + .slider:before {
   margin: 6px 0 0 0;
   font-size: var(--text-xs);
   color: var(--text-tertiary);
+}
+
+/* Mediasite Segmented Control */
+.mediasite-segmented {
+  width: 100%;
+  max-width: 440px;
+}
+
+/* Companion install command & copy button layout */
+.companion-help-box .companion-cmd-row,
+.companion-help-box .install-cmd-row,
+.companion-help-box .extension-id-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.companion-help-box .companion-cmd-row pre,
+.companion-help-box .install-cmd-row pre,
+.companion-help-box .extension-id-row pre {
+  margin: 0;
+  flex: 1;
+}
+
+.companion-help-box pre:has(+ #btn-copy-install-cmd) {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 8px 8px 0 0;
+  max-width: calc(100% - 100px);
+}
+
+.companion-help-box #btn-copy-install-cmd {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  flex-shrink: 0;
 }

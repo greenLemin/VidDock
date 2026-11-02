@@ -14,9 +14,9 @@ export const lifecycle = {
       }
     } catch {}
 
-    // Setup periodic watchdog alarm (every 30 seconds)
+    // Setup periodic watchdog alarm (Chrome MV3 minimum alarm interval is 1 minute)
     try {
-      await chrome.alarms.create('viddock-watchdog', { periodInMinutes: 0.5 });
+      await chrome.alarms.create('viddock-watchdog', { periodInMinutes: 1 });
     } catch {}
   },
 

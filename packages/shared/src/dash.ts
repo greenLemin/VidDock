@@ -85,10 +85,17 @@ function baseOf(node: Node, parent: string): string {
   return text ? resolveUrl(String(text).trim(), parent) : parent;
 }
 
-function formatTemplate(tpl: string, vars: { id: string; bandwidth: number; number?: number; time?: number }): string {
+export function parseByteRange(range: unknown): string | undefined {
+  if (!range) return undefined;
+  const s = String(range).trim();
+  const m = /^bytes=\s*(\d+)\s*-\s*(\d+)$/i.exec(s) ?? /^(\d+)\s*-\s*(\d+)$/.exec(s);
+  return m ? `${m[1]}-${m[2]}` : undefined;
+}
+
+export function formatTemplate(tpl: string, vars: { id: string; bandwidth: number; number?: number; time?: number }): string {
   return tpl.replace(
-    /\$(RepresentationID|Bandwidth|Number|Time)(%0(\d+)d)?\$|\$\$/g,
-    (m, name: string, _f, width: string) => {
+    /\$(RepresentationID|Bandwidth|Number|Time)(?:%0?(\d+)?[du])?\$|\$\$/g,
+    (m, name: string, width?: string) => {
       if (m === '$$') return '$';
       let val: string;
       switch (name) {
@@ -104,7 +111,8 @@ function formatTemplate(tpl: string, vars: { id: string; bandwidth: number; numb
         default:
           val = String(vars.time ?? 0);
       }
-      return width ? val.padStart(Number(width), '0') : val;
+      const pad = Number(width ?? 1);
+      return name === 'RepresentationID' && !width ? val : val.padStart(pad, '0');
     },
   );
 }
@@ -142,10 +150,17 @@ function buildRepresentation(
   const list = rep?.SegmentList ?? set?.SegmentList ?? period?.SegmentList;
   const segBase = rep?.SegmentBase ?? set?.SegmentBase ?? period?.SegmentBase;
 
+  const baseInitRange = parseByteRange(segBase?.Initialization?.['@_range']);
+  if (baseInitRange) out.initRange = baseInitRange;
+
   if (tpl) {
     const timescale = Number(tpl['@_timescale'] ?? 1) || 1;
     const initTpl: string | undefined = tpl['@_initialization'] ?? tpl.Initialization?.['@_sourceURL'];
     if (initTpl) out.init = resolveUrl(formatTemplate(initTpl, { id, bandwidth }), repBase);
+    if (!out.initRange) {
+      const initRange = parseByteRange(tpl?.Initialization?.['@_range'] ?? list?.Initialization?.['@_range']);
+      if (initRange) out.initRange = initRange;
+    }
     const media: string | undefined = tpl['@_media'];
     if (!media) throw new Error(`Representation ${id}: SegmentTemplate without @media`);
     const startNumber = Number(tpl['@_startNumber'] ?? 1);
@@ -185,6 +200,10 @@ function buildRepresentation(
     const dur = Number(list['@_duration'] ?? 0) / timescale;
     const init = list.Initialization?.['@_sourceURL'];
     if (init) out.init = resolveUrl(init, repBase);
+    if (!out.initRange) {
+      const initRange = parseByteRange(tpl?.Initialization?.['@_range'] ?? list?.Initialization?.['@_range']);
+      if (initRange) out.initRange = initRange;
+    }
     for (const su of arr(list.SegmentURL)) {
       out.segments.push({
         url: resolveUrl(su['@_media'], repBase),

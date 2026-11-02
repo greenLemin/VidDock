@@ -24,6 +24,7 @@ initColorTheme();
 export class PopupController {
   private state: PopupState | null = null;
   private selectedQualities = new Map<string, string>();
+  private selectedSubtitles = new Map<string, string>();
   private selectedLayouts = new Map<string, DualStreamLayout>();
   private selectedLiveModes = new Map<string, LiveMode>();
   private selectedLiveDurations = new Map<string, number>();
@@ -46,8 +47,7 @@ export class PopupController {
         document.getElementById('btn-onboarding-dismiss')?.addEventListener(
           'click',
           async () => {
-            await chrome.storage.local.set({ hasSeenOnboarding: true });
-            modal.classList.add('hidden');
+            await this.dismissOnboarding();
           },
           { once: true },
         );
@@ -57,6 +57,16 @@ export class PopupController {
     } catch {
       modal.classList.add('hidden');
     }
+  }
+
+  async dismissOnboarding(): Promise<void> {
+    const modal = document.getElementById('onboarding-modal');
+    if (modal) {
+      modal.classList.add('hidden');
+    }
+    try {
+      await chrome.storage.local.set({ hasSeenOnboarding: true });
+    } catch {}
   }
 
   private bindStaticEvents(): void {
@@ -87,6 +97,70 @@ export class PopupController {
 
     document.getElementById('host-status-pill')?.addEventListener('click', () => {
       chrome.tabs.create({ url: chrome.runtime.getURL('settings/index.html') });
+    });
+
+    const btnDownloadAll = document.getElementById('btn-download-all');
+    if (
+      btnDownloadAll &&
+      !(btnDownloadAll as unknown as { _hasDownloadAllListener?: boolean })._hasDownloadAllListener
+    ) {
+      (btnDownloadAll as unknown as { _hasDownloadAllListener?: boolean })._hasDownloadAllListener = true;
+      btnDownloadAll.addEventListener('click', () => {
+        this.downloadAll();
+      });
+    }
+
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      const modal = document.getElementById('onboarding-modal');
+      const isModalOpen = modal && !modal.classList.contains('hidden');
+
+      if (isModalOpen) {
+        if (e.key === 'Escape') {
+          e.preventDefault?.();
+          this.dismissOnboarding();
+          return;
+        }
+        if (e.key === 'Tab') {
+          const focusables = typeof modal.querySelectorAll === 'function'
+            ? (Array.from(
+                modal.querySelectorAll<HTMLElement>(
+                  'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+                ),
+              ).filter((el) => !el.hasAttribute('disabled')) as HTMLElement[])
+            : [];
+          if (focusables.length > 0) {
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = typeof document !== 'undefined' ? document.activeElement : null;
+            if (e.shiftKey) {
+              if (active === first || (typeof modal.contains === 'function' && !modal.contains(active as Node))) {
+                e.preventDefault?.();
+                last?.focus?.();
+              }
+            } else {
+              if (active === last || (typeof modal.contains === 'function' && !modal.contains(active as Node))) {
+                e.preventDefault?.();
+                first?.focus?.();
+              }
+            }
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'r' || e.key === 'R') {
+        const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+        const tag = activeEl?.tagName?.toLowerCase();
+        if (tag !== 'input' && tag !== 'select' && tag !== 'textarea') {
+          e.preventDefault?.();
+          const refreshBtn = document.getElementById('btn-refresh-media');
+          if (typeof refreshBtn?.click === 'function') {
+            refreshBtn.click();
+          } else {
+            this.rescanMedia();
+          }
+        }
+      }
     });
   }
 
@@ -191,6 +265,7 @@ export class PopupController {
     const mediaList = document.getElementById('media-list');
     const emptyState = document.getElementById('empty-state');
     const countBadge = document.getElementById('media-count');
+    const btnDownloadAll = document.getElementById('btn-download-all') as HTMLButtonElement | null;
     if (!mediaList || !emptyState) return;
 
     const items = this.state.items || [];
@@ -198,6 +273,7 @@ export class PopupController {
       if (countBadge) countBadge.textContent = '0';
       mediaList.innerHTML = '';
       emptyState.classList.remove('hidden');
+      if (btnDownloadAll) btnDownloadAll.classList.add('hidden');
       return;
     }
 
@@ -223,6 +299,33 @@ export class PopupController {
       countBadge.textContent = String(totalCards);
     }
 
+    // Count downloadable (non-DRM) streams
+    let downloadableCount = 0;
+    for (const [, groupItems] of mediasiteGroups.entries()) {
+      if (!groupItems.some((i) => i.unsupportedReason)) {
+        downloadableCount++;
+      }
+    }
+    for (const item of otherItems) {
+      if (!item.unsupportedReason) {
+        downloadableCount++;
+      }
+    }
+
+    if (btnDownloadAll) {
+      if (downloadableCount >= 2) {
+        btnDownloadAll.classList.remove('hidden');
+      } else {
+        btnDownloadAll.classList.add('hidden');
+      }
+      if (!(btnDownloadAll as unknown as { _hasDownloadAllListener?: boolean })._hasDownloadAllListener) {
+        (btnDownloadAll as unknown as { _hasDownloadAllListener?: boolean })._hasDownloadAllListener = true;
+        btnDownloadAll.addEventListener('click', () => {
+          this.downloadAll();
+        });
+      }
+    }
+
     for (const [groupId, groupItems] of mediasiteGroups.entries()) {
       const card = this.createMediasitePresentationCard(groupId, groupItems);
       mediaList.appendChild(card);
@@ -237,6 +340,7 @@ export class PopupController {
   private createMediaCard(item: MediaItem): HTMLElement {
     const card = document.createElement('div');
     card.className = 'media-card';
+    card.setAttribute('data-item-id', item.id);
 
     // Top Row: Stream Badge and Duration
     const topRow = document.createElement('div');
@@ -292,6 +396,14 @@ export class PopupController {
       select.appendChild(opt);
     }
 
+    if (!item.isLive && (item as unknown as { type?: string }).type !== 'audio') {
+      const audioOpt = document.createElement('option');
+      audioOpt.value = 'audio-only';
+      audioOpt.textContent = 'Audio Only (M4A)';
+      if (selectedQ === 'audio-only') audioOpt.selected = true;
+      select.appendChild(audioOpt);
+    }
+
     select.addEventListener('change', () => {
       this.selectedQualities.set(item.id, select.value);
     });
@@ -303,6 +415,52 @@ export class PopupController {
     selectWrapper.appendChild(select);
     selectWrapper.appendChild(chevron);
     controlsRow.appendChild(selectWrapper);
+
+    // Subtitle Track Selection
+    if (item.subtitles && item.subtitles.length > 0) {
+      const subWrapper = document.createElement('div');
+      subWrapper.className = 'select-wrapper subtitle-wrapper';
+
+      const subSelect = document.createElement('select');
+      subSelect.className = 'select-apple subtitle-select';
+      subSelect.setAttribute('aria-label', 'Subtitles');
+
+      const optAll = document.createElement('option');
+      optAll.value = 'all';
+      optAll.textContent = 'All Subtitles';
+      subSelect.appendChild(optAll);
+
+      const optNone = document.createElement('option');
+      optNone.value = 'none';
+      optNone.textContent = 'No Subtitles';
+      subSelect.appendChild(optNone);
+
+      const currentSub = this.selectedSubtitles.get(item.id) || 'all';
+
+      for (const sub of item.subtitles) {
+        const optSub = document.createElement('option');
+        optSub.value = sub.id;
+        optSub.textContent = sub.label || sub.language || sub.id;
+        if (sub.id === currentSub) optSub.selected = true;
+        subSelect.appendChild(optSub);
+      }
+
+      if (currentSub === 'all') optAll.selected = true;
+      else if (currentSub === 'none') optNone.selected = true;
+
+      subSelect.addEventListener('change', () => {
+        this.selectedSubtitles.set(item.id, subSelect.value);
+      });
+
+      const subChevron = document.createElement('span');
+      subChevron.className = 'select-chevron';
+      subChevron.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+      subWrapper.appendChild(subSelect);
+      subWrapper.appendChild(subChevron);
+      controlsRow.appendChild(subWrapper);
+    }
+
     card.appendChild(controlsRow);
 
     // Mediasite Layout Selector if applicable
@@ -446,9 +604,10 @@ export class PopupController {
     if (activeLiveTask) {
       const btnStop = document.createElement('button');
       btnStop.type = 'button';
-      btnStop.className = 'btn-primary btn-stop';
+      btnStop.className = 'btn-primary btn-stop btn-stop-live';
       btnStop.style.width = '100%';
       btnStop.textContent = 'Stop & Save';
+      btnStop.setAttribute('aria-label', `Stop and save recording for ${item.title}`);
       btnStop.addEventListener('click', async () => {
         btnStop.disabled = true;
         btnStop.textContent = 'Stopping...';
@@ -481,65 +640,10 @@ export class PopupController {
         : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download Video`;
 
       btnDownload.addEventListener('click', async () => {
-        btnDownload.disabled = true;
-        btnDownload.textContent = item.isLive ? 'Starting stream capture...' : 'Starting...';
-
-        const liveMode = item.isLive ? this.selectedLiveModes.get(item.id) || 'dvr' : undefined;
-        const liveDurationSeconds =
-          liveMode === 'duration' ? this.selectedLiveDurations.get(item.id) || 900 : undefined;
-
-        const params: StartDownloadParams = {
-          itemId: item.id,
-          qualityId: this.selectedQualities.get(item.id) || qualities[0]?.id,
-          layout:
-            this.selectedLayouts.get(item.groupId || item.id) ||
-            this.state?.settings?.dualStreamLayout ||
-            item.layout ||
-            'side-by-side',
-          liveMode,
-          liveDurationSeconds,
-        };
-
-        try {
-          const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ taskId: string }>>({
-            type: 'startDownload',
-            params,
-          });
-          if (res && res.ok) {
-            btnDownload.textContent = item.isLive ? 'Recording Live Stream...' : 'Queued in VidDock';
-            if (item.isLive && res.data?.taskId) {
-              const liveTaskId = res.data.taskId;
-              if (!card.querySelector('.btn-stop')) {
-                const btnStop = document.createElement('button');
-                btnStop.type = 'button';
-                btnStop.className = 'btn-primary btn-stop';
-                btnStop.style.width = '100%';
-                btnStop.style.marginTop = '6px';
-                btnStop.textContent = 'Stop & Save';
-                btnStop.addEventListener('click', async () => {
-                  btnStop.disabled = true;
-                  btnStop.textContent = 'Stopping...';
-                  await chrome.runtime.sendMessage({
-                    type: 'taskAction',
-                    taskId: liveTaskId,
-                    action: 'stop',
-                  });
-                  setTimeout(() => this.refreshState(), 500);
-                });
-                card.appendChild(btnStop);
-              }
-            }
-            setTimeout(() => {
-              this.refreshState();
-            }, 500);
-          } else {
-            btnDownload.textContent = item.isLive ? 'Error starting capture' : 'Error starting download';
-            btnDownload.disabled = false;
-          }
-        } catch {
-          btnDownload.textContent = item.isLive ? 'Capture Failed' : 'Download Failed';
-          btnDownload.disabled = false;
-        }
+        await this.downloadMediaItem(item, card);
+        setTimeout(() => {
+          this.refreshState();
+        }, 500);
       });
     }
 
@@ -549,7 +653,9 @@ export class PopupController {
 
   private createMediasitePresentationCard(groupId: string, items: MediaItem[]): HTMLElement {
     const card = document.createElement('div');
-    card.className = 'media-card';
+    card.className = 'media-card mediasite-card';
+    card.setAttribute('data-item-id', groupId);
+    card.setAttribute('data-presentation-id', groupId);
 
     // Top Row: Stream Badge and Duration
     const topRow = document.createElement('div');
@@ -695,39 +801,10 @@ export class PopupController {
     } else {
       btnDownload.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> Download Presentation`;
       btnDownload.addEventListener('click', async () => {
-        btnDownload.disabled = true;
-        btnDownload.textContent = 'Starting...';
-
-        const chosenLayout =
-          this.selectedLayouts.get(groupId) ||
-          this.state?.settings?.dualStreamLayout ||
-          primaryItem.layout ||
-          'side-by-side';
-
-        const params: StartDownloadParams = {
-          itemId: primaryItem.id,
-          qualityId: this.selectedQualities.get(groupId) || qualities[0]?.id,
-          layout: chosenLayout,
-        };
-
-        try {
-          const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ taskId: string }>>({
-            type: 'startDownload',
-            params,
-          });
-          if (res && res.ok) {
-            btnDownload.textContent = 'Queued in VidDock';
-            setTimeout(() => {
-              this.refreshState();
-            }, 500);
-          } else {
-            btnDownload.textContent = 'Error starting download';
-            btnDownload.disabled = false;
-          }
-        } catch {
-          btnDownload.textContent = 'Download Failed';
-          btnDownload.disabled = false;
-        }
+        await this.downloadMediasiteGroup(groupId, items, card);
+        setTimeout(() => {
+          this.refreshState();
+        }, 500);
       });
     }
 
@@ -760,8 +837,9 @@ export class PopupController {
     if (activeLiveTask) {
       if (!dockStopBtn) {
         dockStopBtn = document.createElement('button');
-        dockStopBtn.className = 'btn-secondary btn-sm dock-stop-btn';
+        dockStopBtn.className = 'btn-secondary btn-sm dock-stop-btn btn-stop-live';
         dockStopBtn.textContent = 'Stop & Save';
+        dockStopBtn.setAttribute('aria-label', `Stop and save live recording: ${activeLiveTask.title}`);
         dockStopBtn.addEventListener('click', async () => {
           dockStopBtn!.disabled = true;
           dockStopBtn!.textContent = 'Stopping...';
@@ -806,6 +884,228 @@ export class PopupController {
       speedEl.textContent = 'Queued';
       progressFill.className = 'progress-fill';
       progressFill.style.width = '0%';
+    }
+  }
+
+  async downloadAll(): Promise<void> {
+    if (!this.state) return;
+    const btnDownloadAll = document.getElementById('btn-download-all') as HTMLButtonElement | null;
+    if (btnDownloadAll) {
+      btnDownloadAll.disabled = true;
+      btnDownloadAll.textContent = 'Downloading...';
+    }
+
+    const items = this.state.items || [];
+    const mediasiteGroups = new Map<string, MediaItem[]>();
+    const otherItems: MediaItem[] = [];
+
+    for (const item of items) {
+      if (item.source === 'mediasite' && item.groupId) {
+        const group = mediasiteGroups.get(item.groupId) || [];
+        group.push(item);
+        mediasiteGroups.set(item.groupId, group);
+      } else {
+        otherItems.push(item);
+      }
+    }
+
+    for (const [groupId, groupItems] of mediasiteGroups.entries()) {
+      if (!groupItems.some((i) => i.unsupportedReason)) {
+        await this.downloadMediasiteGroup(groupId, groupItems);
+      }
+    }
+
+    for (const item of otherItems) {
+      if (!item.unsupportedReason) {
+        await this.downloadMediaItem(item);
+      }
+    }
+
+    if (btnDownloadAll) {
+      btnDownloadAll.textContent = 'All Queued';
+      setTimeout(() => {
+        btnDownloadAll.disabled = false;
+        btnDownloadAll.textContent = 'Download All';
+        this.refreshState();
+      }, 1000);
+    } else {
+      this.refreshState();
+    }
+  }
+
+  private async downloadMediaItem(item: MediaItem, card?: HTMLElement): Promise<void> {
+    const targetCard =
+      card ||
+      (typeof document.querySelector === 'function'
+        ? (document.querySelector(`[data-item-id="${item.id}"]`) as HTMLElement | null)
+        : null);
+    const btnDownload = targetCard?.querySelector
+      ? (targetCard.querySelector('button.btn-primary:not(.btn-stop)') as HTMLButtonElement | null)
+      : null;
+
+    if (btnDownload) {
+      btnDownload.disabled = true;
+      btnDownload.textContent = item.isLive ? 'Starting stream capture...' : 'Starting...';
+    }
+
+    const qualities = item.qualities && item.qualities.length > 0 ? item.qualities : [{ id: 'q0', label: 'Default' }];
+    const liveMode = item.isLive ? this.selectedLiveModes.get(item.id) || 'dvr' : undefined;
+    const liveDurationSeconds =
+      liveMode === 'duration' ? this.selectedLiveDurations.get(item.id) || 900 : undefined;
+
+    const selectedSubtitle = this.selectedSubtitles.get(item.id) || 'all';
+    const subtitleIds =
+      selectedSubtitle === 'none' ? [] : selectedSubtitle === 'all' ? undefined : [selectedSubtitle];
+
+    const chosenQuality = this.selectedQualities.get(item.id) || qualities[0]?.id;
+    const activeSegment = targetCard?.querySelector
+      ? (targetCard.querySelector('.segment-btn.active') as HTMLElement | null)
+      : null;
+    const domLayout = (activeSegment?.dataset?.layout ||
+      activeSegment?.getAttribute?.('data-layout')) as DualStreamLayout | undefined;
+
+    const chosenLayout =
+      domLayout ||
+      this.selectedLayouts.get(item.groupId || item.id) ||
+      this.state?.settings?.dualStreamLayout ||
+      item.layout ||
+      'side-by-side';
+
+    const params: StartDownloadParams & { selectedQuality?: string; selectedSubtitles?: string } = {
+      itemId: item.id,
+      qualityId: chosenQuality,
+      selectedQuality: chosenQuality,
+      layout: chosenLayout,
+      liveMode,
+      liveDurationSeconds,
+    };
+    if (subtitleIds !== undefined) {
+      params.subtitleIds = subtitleIds;
+    }
+    if (this.selectedSubtitles.has(item.id) || (item.subtitles && item.subtitles.length > 0)) {
+      params.selectedSubtitles = selectedSubtitle;
+    }
+
+    try {
+      const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ taskId: string }>>({
+        type: 'startDownload',
+        params,
+      });
+      if (res && res.ok) {
+        if (btnDownload) {
+          btnDownload.textContent = item.isLive ? 'Recording Live Stream...' : 'Queued in VidDock';
+        }
+        if (item.isLive && res.data?.taskId && targetCard) {
+          const liveTaskId = res.data.taskId;
+          if (!targetCard.querySelector('.btn-stop')) {
+            const btnStop = document.createElement('button');
+            btnStop.type = 'button';
+            btnStop.className = 'btn-primary btn-stop btn-stop-live';
+            btnStop.style.width = '100%';
+            btnStop.style.marginTop = '6px';
+            btnStop.textContent = 'Stop & Save';
+            btnStop.setAttribute('aria-label', `Stop and save recording for ${item.title}`);
+            btnStop.addEventListener('click', async () => {
+              btnStop.disabled = true;
+              btnStop.textContent = 'Stopping...';
+              await chrome.runtime.sendMessage({
+                type: 'taskAction',
+                taskId: liveTaskId,
+                action: 'stop',
+              });
+              setTimeout(() => this.refreshState(), 500);
+            });
+            targetCard.appendChild(btnStop);
+          }
+        }
+      } else {
+        if (btnDownload) {
+          btnDownload.textContent = item.isLive ? 'Error starting capture' : 'Error starting download';
+          btnDownload.disabled = false;
+        }
+      }
+    } catch {
+      if (btnDownload) {
+        btnDownload.textContent = item.isLive ? 'Capture Failed' : 'Download Failed';
+        btnDownload.disabled = false;
+      }
+    }
+  }
+
+  private async downloadMediasiteGroup(
+    presentationId: string,
+    items: MediaItem[],
+    card?: HTMLElement,
+  ): Promise<void> {
+    const primaryItem = items.find((i) => i.hasVideo) || items[0]!;
+    const targetCard =
+      card ||
+      (typeof document.querySelector === 'function'
+        ? (document.querySelector(
+            `.mediasite-card[data-presentation-id="${presentationId}"]`,
+          ) as HTMLElement | null) ||
+          (document.querySelector(`[data-item-id="${presentationId}"]`) as HTMLElement | null)
+        : null);
+    const btnDownload = targetCard?.querySelector
+      ? (targetCard.querySelector('button.btn-primary') as HTMLButtonElement | null)
+      : null;
+
+    if (btnDownload) {
+      btnDownload.disabled = true;
+      btnDownload.textContent = 'Starting...';
+    }
+
+    const qualities =
+      primaryItem.qualities && primaryItem.qualities.length > 0
+        ? primaryItem.qualities
+        : [{ id: 'q0', label: 'Default' }];
+
+    const activeSegment = targetCard?.querySelector
+      ? (targetCard.querySelector('.segment-btn.active') as HTMLElement | null)
+      : null;
+    const domLayout = (activeSegment?.dataset?.layout ||
+      activeSegment?.getAttribute?.('data-layout')) as DualStreamLayout | undefined;
+
+    const settingsMediasiteLayout =
+      (this.state?.settings as unknown as { mediasiteLayout?: DualStreamLayout })?.mediasiteLayout ??
+      this.state?.settings?.dualStreamLayout;
+
+    const chosenLayout: DualStreamLayout =
+      domLayout ||
+      this.selectedLayouts.get(presentationId) ||
+      settingsMediasiteLayout ||
+      primaryItem.layout ||
+      'side-by-side';
+
+    const chosenQuality = this.selectedQualities.get(presentationId) || qualities[0]?.id;
+    const chosenMediasiteSub = this.selectedSubtitles.get(presentationId);
+
+    const params: StartDownloadParams & { selectedQuality?: string; selectedSubtitles?: string } = {
+      itemId: primaryItem.id,
+      qualityId: chosenQuality,
+      selectedQuality: chosenQuality,
+      layout: chosenLayout,
+      ...(chosenMediasiteSub ? { selectedSubtitles: chosenMediasiteSub } : {}),
+    };
+
+    try {
+      const res = await chrome.runtime.sendMessage<unknown, BgResponse<{ taskId: string }>>({
+        type: 'startDownload',
+        params,
+      });
+      if (res && res.ok) {
+        if (btnDownload) btnDownload.textContent = 'Queued in VidDock';
+      } else {
+        if (btnDownload) {
+          btnDownload.textContent = 'Error starting download';
+          btnDownload.disabled = false;
+        }
+      }
+    } catch {
+      if (btnDownload) {
+        btnDownload.textContent = 'Download Failed';
+        btnDownload.disabled = false;
+      }
     }
   }
 }

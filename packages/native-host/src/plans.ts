@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
 import { areCodecsCompatible, isAudioUrlOrMime, parseHls, parseMpd, pickQuality, sortQualities } from '@viddock/shared';
 import type { DashRepresentation, HlsMedia, NativeTrack } from '@viddock/shared';
 import { HttpClient, HttpError } from './http.ts';
@@ -191,7 +190,7 @@ async function planHls(track: Extract<NativeTrack, { type: 'hls' }>, ctx: PlanCo
 }
 
 export function parseRange(r: string | undefined): RangeSpec | undefined {
-  const m = /^(\d+)-(\d+)$/.exec(r ?? '');
+  const m = /^(?:bytes=)?\s*(\d+)\s*-\s*(\d+)$/i.exec(r ?? '');
   if (!m) return undefined;
   const a = Number(m[1]);
   return { offset: a, length: Number(m[2]) - a + 1 };
@@ -264,7 +263,10 @@ function dashStream(
   };
 }
 
-async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: PlanContext): Promise<TrackPlan> {
+async function planDash(
+  track: Extract<NativeTrack, { type: 'dash' }> & { kind?: string },
+  ctx: PlanContext,
+): Promise<TrackPlan> {
   const { text, finalUrl } = await ctx.client.getText(track.url, ctx.signal);
   let mpd;
   try {
@@ -281,9 +283,13 @@ async function planDash(track: Extract<NativeTrack, { type: 'dash' }>, ctx: Plan
 
   let p0Video: DashRepresentation | undefined;
   if (p0VideoReps.length > 0) {
-    p0Video = track.videoRepId ? p0VideoReps.find((r) => r.id === track.videoRepId) : sortQualities(p0VideoReps)[0];
-    if (!p0Video)
-      throw new UserFacingError(`Video representation "${track.videoRepId}" not found in manifest`, 'BAD_MANIFEST');
+    if (track.videoRepId) {
+      p0Video = p0VideoReps.find((r) => r.id === track.videoRepId);
+      if (!p0Video)
+        throw new UserFacingError(`Video representation "${track.videoRepId}" not found in manifest`, 'BAD_MANIFEST');
+    } else if (track.kind !== 'audio') {
+      p0Video = sortQualities(p0VideoReps)[0];
+    }
   }
 
   let p0Audio: DashRepresentation | undefined;
@@ -392,7 +398,7 @@ function planDirect(track: Extract<NativeTrack, { type: 'direct' }>, ctx: PlanCo
   };
 }
 
-export async function planTrack(track: NativeTrack, ctx: PlanContext): Promise<TrackPlan> {
+export async function planTrack(track: NativeTrack & { kind?: string }, ctx: PlanContext): Promise<TrackPlan> {
   switch (track.type) {
     case 'hls':
       return planHls(track, ctx);
@@ -423,23 +429,31 @@ export interface AssembleResult {
 export async function assembleStream(stream: StreamPlan): Promise<AssembleResult> {
   if (stream.direct) return { totalParts: stream.parts.length, assembledParts: stream.parts.length, skippedParts: 0 };
   const tmp = `${stream.file}.assembling`;
-  const out = fs.createWriteStream(tmp);
+  let outHandle: fs.promises.FileHandle | undefined;
   let assembledParts = 0;
   let skippedParts = 0;
   try {
+    outHandle = await fs.promises.open(tmp, 'w');
     for (const part of stream.parts) {
       if (!fs.existsSync(part.dest) || fs.statSync(part.dest).size === 0) {
         skippedParts++;
         continue;
       }
-      await pipeline(fs.createReadStream(part.dest), out, { end: false });
+      for await (const chunk of fs.createReadStream(part.dest)) {
+        await outHandle.write(chunk);
+      }
       assembledParts++;
     }
-    await new Promise<void>((resolve, reject) => {
-      out.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
+    await outHandle.close();
+    outHandle = undefined;
   } catch (e) {
-    out.destroy();
+    if (outHandle) {
+      try {
+        await outHandle.close();
+      } catch {
+        // ignore
+      }
+    }
     fs.rmSync(tmp, { force: true });
     if ((e as { code?: string }).code === 'ENOSPC')
       throw new UserFacingError('Disk is full while assembling the download', 'DISK_FULL');

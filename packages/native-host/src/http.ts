@@ -248,7 +248,8 @@ export class HttpClient {
         throw new HttpError(`Incomplete response (${size}/${expected} bytes)`, undefined, 'TRUNCATED', true);
       }
       if (opts.transform) {
-        fs.writeFileSync(part, opts.transform(fs.readFileSync(part)));
+        const transformed = opts.transform(await fs.promises.readFile(part));
+        await fs.promises.writeFile(part, transformed);
       }
       fs.renameSync(part, dest);
       return fs.statSync(dest).size;

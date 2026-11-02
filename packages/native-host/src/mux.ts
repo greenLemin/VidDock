@@ -59,7 +59,7 @@ export function collectCodecs(inputs: MuxInput[]) {
 }
 
 /** Choose an output container without ever relabelling an incompatible stream (no fake MP4s). */
-export function chooseContainer(pref: Container, inputs: MuxInput[], layout?: DualStreamLayout): ContainerChoice {
+export function chooseContainer(pref: Container | 'm4a', inputs: MuxInput[], layout?: DualStreamLayout): ContainerChoice {
   const { video, audio } = collectCodecs(inputs);
   const isDualComposite = (layout === 'side-by-side' || layout === 'pip') && video.length >= 2;
   const effectiveVideo = isDualComposite ? ['h264'] : video;
@@ -68,6 +68,13 @@ export function chooseContainer(pref: Container, inputs: MuxInput[], layout?: Du
     const a = audio[0] ?? '';
     const single = audio.length === 1;
     if (pref === 'mkv') return choice('mka');
+    if (pref === 'm4a') {
+      const isCompat = audio.length > 0 && audio.every((c) => MP4_AUDIO.has(c));
+      const badAudio = audio.filter((c) => !MP4_AUDIO.has(c));
+      return isCompat
+        ? choice('m4a')
+        : choice('mka', `Saved as MKA: ${badAudio.join(', ') || 'codecs'} cannot be stored in M4A without transcoding`);
+    }
     if (single && (a === 'aac' || a === 'alac')) return choice('m4a');
     if (single && a === 'mp3') return choice('mp3');
     if (single && a === 'flac') return choice('flac');
@@ -80,6 +87,7 @@ export function chooseContainer(pref: Container, inputs: MuxInput[], layout?: Du
   switch (pref) {
     case 'mkv':
       return choice('mkv');
+    case 'm4a':
     case 'mp4':
       return mp4Ok
         ? choice('mp4')

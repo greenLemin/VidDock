@@ -18,6 +18,15 @@
     },
     "default_title": "VidDock Video Downloader"
   },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+Shift+V",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Open VidDock popup"
+    }
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
