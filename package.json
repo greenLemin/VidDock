@@ -43,7 +43,7 @@
     "playwright": "^1.49.0",
     "prettier": "^3.4.0",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.18.0",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^3.2.7"
   },
   "overrides": {
